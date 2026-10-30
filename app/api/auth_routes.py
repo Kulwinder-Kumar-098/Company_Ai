@@ -1,4 +1,3 @@
-"""Authentication API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -10,17 +9,20 @@ from app.services.auth_service import (
     create_access_token,
 )
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"],
+)
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(
     credentials: LoginRequest,
     db: Session = Depends(get_db),
-) -> TokenResponse:
+):
     employee = authenticate_user(
         db=db,
-        email=str(credentials.email),
+        email=credentials.email,
         password=credentials.password,
     )
 

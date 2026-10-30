@@ -6,6 +6,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.database import engine
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.auth_routes import router as auth_router
+from app.api.employee_routes import router as employee_router
+from app.api.project_routes import router as project_router
 
 
 app = FastAPI(
@@ -17,6 +19,8 @@ app = FastAPI(
 app.include_router(knowledge_router)
 
 app.include_router(auth_router)
+app.include_router(employee_router)
+app.include_router(project_router)
 
 @app.get("/health")
 def health():

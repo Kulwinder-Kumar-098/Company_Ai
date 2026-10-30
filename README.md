@@ -1,35 +1,49 @@
-# Enterprise AI Agent Platform — Minimal Starter
+# Company AI
 
-A small FastAPI starter for a role-based enterprise assistant. Includes demo identity checks, role permissions, a tiny local policy knowledge base, and a modular folder structure.
+A FastAPI enterprise assistant with JWT authentication, database-backed role
+permissions, policy retrieval, and resource-scoped employee, project, and task
+read APIs.
 
 ## Run locally
+
+Configure `DATABASE_URL` and a strong `JWT_SECRET_KEY` in `.env`, then install
+dependencies and start the application:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+alembic upgrade head
+python -m app.seed
 uvicorn app.main:app --reload
 ```
-Open http://127.0.0.1:8000/docs
 
-## Demo users
-Use these headers:
-- `E001` + `employee`
-- `E002` + `hr`
-- `E003` + `project_manager`
-- `E004` + `cto`
+Open http://127.0.0.1:8000/docs to use Swagger. Sign in through
+`POST /auth/login` and authorize Swagger with the returned bearer token.
 
-Example:
+The seed script is additive and idempotent: it inserts missing permissions and
+role mappings without deleting existing mappings. It can be safely rerun with
+`python -m app.seed`.
+
+## Resource access
+
+- `POST /knowledge/ask` requires `policy:read`.
+- HR and admin roles can list and read employee records across departments.
+- Employees can list and read only their own employee record.
+- Managers and employees can read projects they manage or have a task assigned
+  to. Admins can read all projects.
+- Project managers can read all tasks in projects they manage; other assigned
+  users can read only their own tasks.
+- Successful sensitive reads and authorization denials are written to
+  `audit_events`.
+
+The existing employee, project, and task APIs are read-only. Their corresponding
+write operations, audit coverage for future mutations, and broader
+resource-specific business policies should be added before those capabilities
+are introduced.
+
+## Tests
+
 ```bash
-curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" -H "X-Employee-ID: E001" -H "X-Role: employee" -d '{"message":"What is the leave policy?"}'
+pytest -q tests
 ```
-
-## Security warning
-This is a learning scaffold, not production authentication. Do not trust user-controlled role headers in production. Replace the demo dependency with verified SSO/OIDC or JWT identity, load roles from a trusted database, and enforce resource-level authorization before every retrieval and tool call.
-
-## Next steps
-1. Add PostgreSQL models and migrations.
-2. Replace demo headers with SSO/OIDC.
-3. Add PDF ingestion and embeddings (FAISS or pgvector).
-4. Add role-filtered retrieval.
-5. Add audited HR/project/engineering tools.
-6. Add tests for cross-role data leakage.

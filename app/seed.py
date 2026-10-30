@@ -10,11 +10,17 @@ ROLES = [
 ]
 
 PERMISSIONS = [
+    ("policy:read", "Read company policies"),
     ("employees:read", "View employee records"),
+    ("employees:read:all", "View employee records across departments"),
+    ("employees:read:self", "View own employee record"),
     ("employees:create", "Create employee records"),
     ("employees:update", "Update employee records"),
     ("roles:manage", "Manage roles and permissions"),
     ("projects:read", "View permitted projects"),
+    ("projects:read:all", "View all projects"),
+    ("projects:read:assigned", "View managed or assigned projects"),
+    ("tasks:read:assigned", "View tasks in managed or assigned projects"),
     ("projects:manage", "Manage projects"),
     ("reports:read", "View permitted reports"),
 ]
@@ -48,18 +54,27 @@ def seed_data():
         role_permissions = {
             "admin": list(permissions),
             "hr": [
+                "policy:read",
                 "employees:read",
+                "employees:read:all",
                 "employees:create",
                 "employees:update",
                 "reports:read",
             ],
             "manager": [
+                "policy:read",
                 "employees:read",
+                "projects:read:assigned",
+                "tasks:read:assigned",
                 "projects:read",
                 "projects:manage",
                 "reports:read",
             ],
             "employee": [
+                "policy:read",
+                "employees:read:self",
+                "projects:read:assigned",
+                "tasks:read:assigned",
                 "projects:read",
             ],
         }
