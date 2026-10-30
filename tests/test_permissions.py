@@ -131,6 +131,15 @@ def test_policy_endpoint_requires_jwt(client):
     assert response.status_code == 401
 
 
+def test_swagger_uses_http_bearer_scheme(client):
+    schema = client.get("/openapi.json").json()
+
+    assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+
+
 @pytest.mark.parametrize("token_kind", ["invalid", "expired"])
 def test_invalid_or_expired_jwt_is_unauthorized(client, token_kind):
     if token_kind == "invalid":
