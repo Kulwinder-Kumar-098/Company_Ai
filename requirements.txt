@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+alembic
+pydantic-settings
+pandas
+pypdf
+python-dotenv
+pytest
+httpx
+sentence-transformers
+faiss-cpu
