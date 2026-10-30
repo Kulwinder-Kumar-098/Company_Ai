@@ -11,5 +11,9 @@ pytest
 httpx
 sentence-transformers
 faiss-cpu
+numpy
+ollama
 pyjwt
 pwdlib[argon2]
+python-multipart
+python-docx

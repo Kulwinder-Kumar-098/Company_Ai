@@ -21,14 +21,21 @@ dependencies = [
     "pyjwt>=2.15.1",
     "pypdf>=6.21.3",
     "pytest>=9.2.0",
+    "python-docx>=1.2.0",
     "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.32",
     "sentence-transformers>=6.2.0",
     "sqlalchemy>=2.0.55",
     "uvicorn[standard]>=0.30,<1.0",
 ]
 
 [project.scripts]
-enterprise-ai-agent = "enterprise_ai_agent:main"
+enterprise-ai-agent = "app:main"
+document-worker = "app.workers.document_worker:main"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

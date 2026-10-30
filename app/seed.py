@@ -10,6 +10,11 @@ ROLES = [
 ]
 
 PERMISSIONS = [
+    ("documents:create", "Upload company documents"),
+    ("documents:read", "View accessible company documents"),
+    ("documents:publish", "Publish company-wide documents"),
+    ("documents:delete", "Delete uploaded documents"),
+    ("documents:version", "Upload new document versions"),
     ("policy:read", "Read company policies"),
     ("employees:read", "View employee records"),
     ("employees:read:all", "View employee records across departments"),
@@ -59,6 +64,8 @@ def seed_data():
             "admin": list(permissions),
             "hr": [
                 "policy:read",
+                "documents:read",
+                "documents:version",
                 "employees:read",
                 "employees:read:all",
                 "employees:create",
@@ -67,6 +74,8 @@ def seed_data():
             ],
             "manager": [
                 "policy:read",
+                "documents:read",
+                "documents:version",
                 "employees:read",
                 "projects:read:assigned",
                 "tasks:read:assigned",
@@ -76,6 +85,7 @@ def seed_data():
             ],
             "employee": [
                 "policy:read",
+                "documents:read",
                 "employees:read:self",
                 "projects:read:assigned",
                 "tasks:read:assigned",

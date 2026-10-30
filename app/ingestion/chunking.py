@@ -3,21 +3,24 @@
 """Clean extracted document text and split it into overlapping chunks."""
 
 import re
+import unicodedata
 from typing import TypedDict
 
+from app.core.config import settings
 from app.ingestion.parsers import ExtractedPage
 
 
 class DocumentChunk(TypedDict):
     chunk_id: str
     source: str
-    page_number: int
+    page_number: int | None
     chunk_index: int
     text: str
 
 
 def clean_text(text: str) -> str:
     """Normalize whitespace while preserving paragraph boundaries."""
+    text = unicodedata.normalize("NFKC", text)
     text = text.replace("\x00", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -69,8 +72,8 @@ def _split_long_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def chunk_page(
     text: str,
-    chunk_size: int = 1000,
-    overlap: int = 150,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[str]:
     """
     Split one page into chunks.
@@ -78,6 +81,10 @@ def chunk_page(
     chunk_size and overlap are measured in characters, not tokens.
     Paragraph boundaries are preferred when possible.
     """
+    chunk_size = (
+        settings.document_chunk_size if chunk_size is None else chunk_size
+    )
+    overlap = overlap if overlap is not None else settings.document_chunk_overlap
     if chunk_size <= 0:
         raise ValueError("chunk_size must be greater than zero")
 
@@ -148,8 +155,8 @@ def chunk_page(
 
 def chunk_pages(
     pages: list[ExtractedPage],
-    chunk_size: int = 1000,
-    overlap: int = 150,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[DocumentChunk]:
     """Chunk extracted pages and retain source metadata for citations."""
     result: list[DocumentChunk] = []
@@ -161,13 +168,17 @@ def chunk_pages(
             overlap=overlap,
         )
 
-        for chunk_index, text in enumerate(page_chunks, start=1):
+        for page_chunk_index, text in enumerate(page_chunks, start=1):
+            chunk_index = len(result)
+            page_suffix = (
+                f":p{page['page_number']}"
+                if page["page_number"] is not None
+                else ""
+            )
             result.append(
                 {
                     "chunk_id": (
-                        f"{page['source']}:"
-                        f"p{page['page_number']}:"
-                        f"c{chunk_index}"
+                        f"{page['source']}{page_suffix}:c{page_chunk_index}"
                     ),
                     "source": page["source"],
                     "page_number": page["page_number"],

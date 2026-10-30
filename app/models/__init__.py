@@ -9,6 +9,9 @@ from app.models.task import Task
 from app.models.performance_metric import PerformanceMetric
 from app.models.employee_credential import EmployeeCredential
 from app.models.login_rate_limit import LoginRateLimit
+from app.models.document import Document
+from app.models.document_chunk import DocumentChunk
+from app.models.document_processing_job import DocumentProcessingJob
 
 __all__ = [
     "Base",
@@ -17,4 +20,12 @@ __all__ = [
     "Permission",
     "role_permissions",
     "AuditEvent",
+    "Project",
+    "Task",
+    "PerformanceMetric",
+    "EmployeeCredential",
+    "LoginRateLimit",
+    "Document",
+    "DocumentChunk",
+    "DocumentProcessingJob",
 ]
