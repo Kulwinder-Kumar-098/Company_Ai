@@ -8,6 +8,7 @@ from app.models.project import Project
 from app.models.task import Task
 from app.models.performance_metric import PerformanceMetric
 from app.models.employee_credential import EmployeeCredential
+from app.models.login_rate_limit import LoginRateLimit
 
 __all__ = [
     "Base",
