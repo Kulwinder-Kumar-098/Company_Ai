@@ -11,3 +11,5 @@ pytest
 httpx
 sentence-transformers
 faiss-cpu
+pyjwt
+pwdlib[argon2]
