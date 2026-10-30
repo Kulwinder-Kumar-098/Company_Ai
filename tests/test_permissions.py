@@ -225,6 +225,14 @@ def test_seeded_roles_receive_policy_read_permission(
         "hr",
         "manager",
     }
+    privileged_role_rows = db_session.execute(
+        select(Role.name, Permission.code)
+        .join(Role.permissions)
+        .where(Permission.code == "employees:assign:privileged")
+    ).all()
+    assert privileged_role_rows == [
+        ("admin", "employees:assign:privileged")
+    ]
     assert unrelated_permission in employee_role.permissions
 
     before = (

@@ -15,6 +15,10 @@ PERMISSIONS = [
     ("employees:read:all", "View employee records across departments"),
     ("employees:read:self", "View own employee record"),
     ("employees:create", "Create employee records"),
+    (
+        "employees:assign:privileged",
+        "Assign privileged roles when registering employees",
+    ),
     ("employees:update", "Update employee records"),
     ("roles:manage", "Manage roles and permissions"),
     ("projects:read", "View permitted projects"),

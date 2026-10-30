@@ -35,7 +35,17 @@ def registration_client(monkeypatch):
             code="employees:create",
             description="Create employee records",
         )
-        admin_role = Role(name="admin", permissions=[create_permission])
+        privileged_role_permission = Permission(
+            code="employees:assign:privileged",
+            description="Assign privileged roles",
+        )
+        admin_role = Role(
+            name="admin",
+            permissions=[
+                create_permission,
+                privileged_role_permission,
+            ],
+        )
         hr_role = Role(name="hr", permissions=[create_permission])
         employee_role = Role(name="employee")
         manager_role = Role(name="manager")

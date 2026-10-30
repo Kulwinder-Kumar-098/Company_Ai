@@ -3,10 +3,12 @@
 
 import hashlib
 import hmac
+import math
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -45,6 +47,25 @@ def _get_keys(ip_address: str, email: str) -> tuple[str, str]:
     return ip_key, email_key
 
 
+def _lock_login_keys(
+    db: Session,
+    keys: tuple[str, str],
+) -> None:
+    """Serialize login checks and failed-count updates for this IP/email."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+
+    lock_ids = sorted(
+        int.from_bytes(bytes.fromhex(key[:16]), "big", signed=True)
+        for key in keys
+    )
+    for lock_id in lock_ids:
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": lock_id},
+        )
+
+
 def _is_window_active(
     window_started_at: datetime,
     now: datetime,
@@ -68,6 +89,7 @@ def get_retry_after_seconds(
     """Return remaining lockout seconds, or zero if not limited."""
 
     ip_key, email_key = _get_keys(ip_address, email)
+    _lock_login_keys(db, (ip_key, email_key))
     now = _now()
 
     limits = {
@@ -96,9 +118,7 @@ def get_retry_after_seconds(
                 )
 
             elapsed = (now - started_at).total_seconds()
-            remaining = int(
-                WINDOW_MINUTES * 60 - elapsed
-            )
+            remaining = math.ceil(WINDOW_MINUTES * 60 - elapsed)
 
             retry_after = max(retry_after, remaining)
 
@@ -125,12 +145,22 @@ def record_failed_login(
     ip_key, email_key = _get_keys(ip_address, email)
     now = _now()
     cutoff = now - timedelta(minutes=WINDOW_MINUTES)
+    dialect = db.get_bind().dialect.name
+
+    if dialect == "postgresql":
+        insert_statement = insert
+    elif dialect == "sqlite":
+        insert_statement = sqlite_insert
+    else:
+        raise RuntimeError(
+            f"Login rate limiting does not support database dialect {dialect!r}"
+        )
 
     for key_hash in (ip_key, email_key):
         expired = LoginRateLimit.window_started_at <= cutoff
 
         statement = (
-            insert(LoginRateLimit)
+            insert_statement(LoginRateLimit)
             .values(
                 key_hash=key_hash,
                 attempt_count=1,
@@ -170,4 +200,4 @@ def reset_email_failures(
 
     if row is not None:
         db.delete(row)
-        db.commit()
+    db.commit()

@@ -24,6 +24,7 @@ from app.models.audit_event import AuditEvent
 from app.schemas.auth import EmployeeRegistrationRequest
 from app.schemas.resources import EmployeeResponse
 from app.services.auth_service import hash_password
+from app.services.authorization_service import has_permission
 
 
 router = APIRouter(
@@ -141,7 +142,12 @@ def register_employee(
             detail="Invalid role ID",
         )
 
-    if current_user.role.name != "admin" and role.name != "employee":
+    can_assign_privileged_role = has_permission(
+        db,
+        current_user,
+        "employees:assign:privileged",
+    )
+    if not can_assign_privileged_role and role.name != "employee":
         db.add(
             AuditEvent(
                 actor_employee_id=current_user.employee_id,
