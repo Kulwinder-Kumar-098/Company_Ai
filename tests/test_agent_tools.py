@@ -850,7 +850,12 @@ def test_agent_graph_routes_document_only_question_to_secure_rag(
     assert result["sources"][0]["source_id"] == "S1"
     assert result["sources"][0]["chunk_index"] == 3
     assert rag_calls == [
-        (db, employees["EMP-ONE"], "What does the policy say?", {"top_k": 5})
+        (
+            db,
+            employees["EMP-ONE"],
+            "What does the policy say?",
+            {"top_k": 5, "trace_id": result["trace_id"]},
+        )
     ]
 
 

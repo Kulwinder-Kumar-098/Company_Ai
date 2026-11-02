@@ -16,6 +16,10 @@ PERMISSIONS = [
     ("documents:delete", "Delete uploaded documents"),
     ("documents:version", "Upload new document versions"),
     ("chat:use", "Use the authenticated Company AI chat assistant"),
+    (
+        "agent:metrics:read",
+        "View aggregated, redacted agent execution metrics",
+    ),
     ("policy:read", "Read company policies"),
     ("employees:read", "View employee records"),
     ("employees:read:all", "View employee records across departments"),

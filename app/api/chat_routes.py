@@ -30,7 +30,7 @@ def ask_question(
             request.message,
         )
     except Exception:
-        logger.exception("Company AI graph execution failed.")
+        logger.error("Company AI graph execution failed.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Company AI is temporarily unavailable.",
@@ -39,4 +39,5 @@ def ask_question(
         answer=result["answer"],
         role=current_user.role.name,
         sources=result["sources"],
+        trace_id=result.get("trace_id"),
     )

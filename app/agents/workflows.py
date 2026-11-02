@@ -1,5 +1,6 @@
 """Typed state and validated model outputs for the Company AI graph."""
 
+from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -45,17 +46,27 @@ class GeneratedAnswer(BaseModel):
     )
 
 
+@dataclass(frozen=True)
+class PlannerEvaluationResult:
+    plan: RequestPlan | None
+    error_category: str | None
+    selected_tool_names: tuple[str, ...]
+
+
 class AgentState(TypedDict):
+    trace_id: str
     query: str
     actor: Employee
     db: Session
     plan: RequestPlan | None
+    execution_mode: str | None
     safe_error: str | None
     rag_result: dict[str, object] | None
     tool_results: list[dict[str, object]]
     evidence: str
     answer: str
     sources: list[dict[str, object]]
+    telemetry_events: list[dict[str, object]]
 
 
 class AggregatedEvidence(BaseModel):

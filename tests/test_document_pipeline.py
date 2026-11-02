@@ -959,7 +959,11 @@ def test_chat_endpoint_requires_chat_use_not_documents_read(
     db.commit()
     monkeypatch.setattr(
         "app.api.chat_routes.run_agent_query",
-        lambda *_: {"answer": "Answer", "sources": []},
+        lambda *_: {
+            "answer": "Answer",
+            "sources": [],
+            "trace_id": "trace-synthetic-001",
+        },
     )
 
     app = FastAPI()
@@ -999,6 +1003,7 @@ def test_chat_endpoint_requires_chat_use_not_documents_read(
     assert denied_response.status_code == 403
     assert response.status_code == 200
     assert response.json()["answer"] == "Answer"
+    assert response.json()["trace_id"] == "trace-synthetic-001"
     assert spoofed.status_code == 422
     assert "documents:read" not in {
         permission.code for permission in employee.role.permissions

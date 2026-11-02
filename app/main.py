@@ -12,6 +12,7 @@ from app.api.document_routes import router as document_router
 from app.api.chat_routes import router as chat_router
 from app.api.rag_routes import router as rag_router
 from app.api.tool_routes import router as tool_router
+from app.api.observability_routes import router as observability_router
 
 app = FastAPI(
     title="Company AI",
@@ -27,6 +28,7 @@ app.include_router(auth_router)
 app.include_router(employee_router)
 app.include_router(project_router)
 app.include_router(tool_router)
+app.include_router(observability_router)
 
 @app.get("/health")
 def health():

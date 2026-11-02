@@ -224,8 +224,86 @@ tool execution fail closed with bounded safe answers.
 Chat API behavior is still a single `message` request with a `ChatResponse`,
 but answers can now include authorized structured data as well as document
 citations. The graph does not persist conversations, stream output, or allow
-the model to invoke unregistered tools. The `chat:use` permission is required for every chat request; data-source
-permissions are required only when the corresponding graph path is selected.
+the model to invoke unregistered tools. The `chat:use` permission is required
+for every chat request; data-source permissions are required only when the
+corresponding graph path is selected.
+
+## Agent evaluation and observability
+
+The versioned synthetic planner dataset is
+[`app/evaluation/agent_cases.json`](./app/evaluation/agent_cases.json). It
+contains stable case IDs, synthetic queries, categories, expected execution
+mode, expected registry tool names, RAG/citation expectations, expected
+authorization outcome, unsupported expectation, and a fixed fixture planner
+output. Add cases with unique IDs and no real employee information, secrets,
+or confidential document text. Authorization expectations document intended
+execution behavior; the planner-only evaluation does not execute data tools or
+simulate user permissions.
+
+Run the deterministic evaluator:
+
+```bash
+./.venv/bin/python -m app.evaluation.runner --mode fixture
+```
+
+Fixture mode checks the dataset and evaluator deterministically. Its scores
+measure the evaluator against the supplied synthetic fixed planner outputs;
+they are **not** model-quality results. To evaluate the configured Ollama
+planner against synthetic query text, run:
+
+```bash
+./.venv/bin/python -m app.evaluation.runner --mode live
+```
+
+Live mode requires the configured Ollama service and `LLM_MODEL`. It makes
+planner calls only; it does not execute selected tools, retrieve documents, or
+evaluate authorization against a production database. Use `--dataset PATH` to
+select a compatible versioned dataset and `--output PATH` to save the Markdown
+report. Reports include category and overall routing accuracy, exact tool-name
+selection accuracy, invalid-plan and invalid-argument rates, planner-call
+failure rate, unsupported classification accuracy, unnecessary tool-selection
+rate, citation-route coverage, and a per-case table of expected and actual
+planner decisions. Citation-route coverage measures selection of RAG for cases
+marked as citation-requiring, not citation correctness. Execution failure rate
+is reported as not measured in planner-only evaluation; runtime RAG/tool
+execution outcomes are available as telemetry.
+
+Routing accuracy is exact execution-mode agreement. Tool-selection accuracy is
+exact registered tool-name-set agreement. Invalid-plan rate includes malformed
+plans and unregistered tool names; invalid-argument rate counts registered
+tools whose planner arguments fail their Pydantic schema. Unsupported-query
+accuracy is measured only on cases expected to be unsupported. Unnecessary
+tool-selection rate counts selected tools on cases whose expected tool set is
+empty. Planner-call failure rate counts timeouts, unavailable model responses,
+and evaluator failures separately from invalid plans. Case errors distinguish
+invalid JSON, valid JSON that violates the plan schema, registered-tool
+argument validation failures, unregistered tools, and model timeouts. The
+dataset's expected authorization outcomes are policy annotations; they are not
+evaluated by the planner runner because it does not execute tools or access
+company data.
+
+Graph telemetry is emitted as structured `agent_telemetry` log records and
+aggregated in a bounded in-process store. Events include a server-generated
+trace ID (also returned in the chat response), execution mode, graph node and
+duration, selected registered tool name, model call outcome, RAG outcome, tool
+outcome, final response outcome, and a safe error category. The internal
+`GET /internal/agent-metrics` endpoint exposes aggregate counters, mode
+distribution, error categories, latency summaries, and up to 500 recent
+trace-level outcomes with registered tool selections and tool outcomes. Access
+requires the additive `agent:metrics:read`
+permission, granted by the existing seed to admin only; other roles need an
+explicit permission grant. The metrics contain no query, prompt, answer,
+argument, employee, or document content.
+
+The aggregator is process-local, cumulative for the lifetime of a worker, and
+bounded to 5,000 latency samples per series and 500 recent trace summaries.
+Counters are not shared across multiple workers and reset on process restart;
+the existing structured logs remain available for deployment-level aggregation.
+This project currently has no configured OpenTelemetry or Prometheus backend,
+and its `docker-compose.yml` is empty. Security-sensitive authorization events
+continue to use the existing audit-event infrastructure; high-volume timings
+are not stored as audit rows. Telemetry aggregation/logging errors are isolated
+from request authorization and execution.
 
 ## Tests
 

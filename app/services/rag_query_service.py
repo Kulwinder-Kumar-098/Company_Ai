@@ -1,11 +1,13 @@
 """Orchestrate authorized retrieval, bounded context, and RAG generation."""
 
+import time
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.employee import Employee
+from app.observability.agent_telemetry import emit_agent_event
 from app.services.document_retrieval_service import retrieve_document_chunks
 from app.services.rag_context_service import build_rag_context
 from app.services.rag_generation_service import generate_rag_answer
@@ -23,6 +25,7 @@ def answer_rag_query(
     *,
     conversation_id: str | None = None,
     top_k: int = 5,
+    trace_id: str | None = None,
 ) -> dict:
     if not question.strip():
         raise ValueError("Question cannot be empty.")
@@ -44,7 +47,26 @@ def answer_rag_query(
             "sources": [],
         }
 
-    answer = generate_rag_answer(question, context)
+    generation_started = time.perf_counter()
+    try:
+        answer = generate_rag_answer(question, context)
+    except Exception:
+        if trace_id:
+            emit_agent_event(
+                trace_id=trace_id,
+                event="model_call",
+                outcome="failure",
+                duration_ms=(time.perf_counter() - generation_started) * 1000,
+                error_category="rag_generation_failure",
+            )
+        raise
+    if trace_id:
+        emit_agent_event(
+            trace_id=trace_id,
+            event="model_call",
+            outcome="success",
+            duration_ms=(time.perf_counter() - generation_started) * 1000,
+        )
     return {
         "answer": answer,
         "conversation_id": conversation,

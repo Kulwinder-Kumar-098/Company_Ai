@@ -28,3 +28,4 @@ class ChatResponse(BaseModel):
     answer: str
     role: str
     sources: list[Source] = Field(default_factory=list)
+    trace_id: str | None = None

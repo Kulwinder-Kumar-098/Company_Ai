@@ -3,7 +3,9 @@
 import json
 import logging
 import re
+import time
 from typing import cast
+from uuid import uuid4
 
 import httpx
 import ollama
@@ -18,10 +20,12 @@ from app.agents.workflows import (
     AgentState,
     AggregatedEvidence,
     GeneratedAnswer,
+    PlannerEvaluationResult,
     RequestPlan,
 )
 from app.core.config import settings
 from app.models.employee import Employee
+from app.observability.agent_telemetry import emit_agent_event
 from app.observability.audit import record_audit_event
 from app.schemas.rag import RAGQueryResponse
 from app.services.authorization_service import has_permission
@@ -56,6 +60,20 @@ _ollama_client = ollama.Client(
 class ModelResponseError(RuntimeError):
     """Model output was unavailable or failed strict validation."""
 
+    def __init__(self, error_category: str = "model_unavailable") -> None:
+        super().__init__(error_category)
+        self.error_category = error_category
+
+
+class InvalidPlannedArgumentsError(ValueError):
+    """A registered tool was selected with invalid or unexpected arguments."""
+
+
+def _validation_error_category(exc: ValidationError) -> str:
+    if any(error.get("type") == "json_invalid" for error in exc.errors()):
+        return "invalid_model_json"
+    return "invalid_model_schema"
+
 
 def _extract_message_content(response: object) -> str:
     if isinstance(response, dict):
@@ -65,7 +83,7 @@ def _extract_message_content(response: object) -> str:
         message = getattr(response, "message", None)
         content = getattr(message, "content", None)
     if not isinstance(content, str) or not content.strip():
-        raise ModelResponseError("The model returned no structured content.")
+        raise ModelResponseError("invalid_model_output")
     return content.strip()
 
 
@@ -92,16 +110,28 @@ def _validated_model_output(
     system_prompt: str,
     user_prompt: str,
     output_schema: type[RequestPlan] | type[GeneratedAnswer],
+    trace_id: str | None = None,
 ) -> RequestPlan | GeneratedAnswer:
     retry_prompt = user_prompt
+    last_error_category = "model_unavailable"
     for attempt in range(MAX_MODEL_ATTEMPTS):
+        started = time.perf_counter()
         try:
             raw = _request_model_json(
                 system_prompt=system_prompt,
                 user_prompt=retry_prompt,
                 output_schema=output_schema,
             )
-            return output_schema.model_validate_json(raw)
+            output = output_schema.model_validate_json(raw)
+            if trace_id:
+                emit_agent_event(
+                    trace_id=trace_id,
+                    event="model_call",
+                    outcome="success",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    error_category=None if attempt == 0 else "retry_succeeded",
+                )
+            return output
         except (
             ModelResponseError,
             ValidationError,
@@ -110,13 +140,30 @@ def _validated_model_output(
             ConnectionError,
             ollama.ResponseError,
         ) as exc:
+            if isinstance(exc, ModelResponseError):
+                category = exc.error_category
+            elif isinstance(exc, ValidationError):
+                category = _validation_error_category(exc)
+            elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+                category = "model_timeout"
+            else:
+                category = "model_unavailable"
+            if trace_id:
+                emit_agent_event(
+                    trace_id=trace_id,
+                    event="model_call",
+                    outcome="failure",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    error_category=category,
+                )
             if attempt + 1 == MAX_MODEL_ATTEMPTS:
-                raise ModelResponseError from exc
+                raise ModelResponseError(category) from exc
+            last_error_category = category
             retry_prompt = (
                 f"{user_prompt}\n\nYour previous response was invalid. "
                 "Return only a valid JSON object matching the required schema."
             )
-    raise ModelResponseError
+    raise ModelResponseError(last_error_category)
 
 
 def _tool_catalog() -> list[dict[str, object]]:
@@ -130,40 +177,93 @@ def _tool_catalog() -> list[dict[str, object]]:
     ]
 
 
-def _validate_plan_tool_arguments(plan: RequestPlan) -> RequestPlan:
+def validate_registered_plan(plan: RequestPlan) -> RequestPlan:
     if len(plan.tool_calls) > MAX_TOOL_CALLS:
         raise ValueError("Too many tool calls.")
     for tool_call in plan.tool_calls:
         definition = TOOLS.get(tool_call.name)
         if definition is None:
             raise ValueError("Planner selected an unregistered tool.")
-        definition.input_schema.model_validate(tool_call.arguments)
+        try:
+            definition.input_schema.model_validate(tool_call.arguments)
+        except ValidationError as exc:
+            raise InvalidPlannedArgumentsError from exc
     return plan
 
 
-def _plan_node(state: AgentState) -> dict[str, object]:
+def evaluate_planner_query(
+    query: str,
+    *,
+    trace_id: str | None = None,
+) -> PlannerEvaluationResult:
+    """Run and validate one planner result without executing data paths."""
     prompt = json.dumps(
         {
-            "question": state["query"],
+            "question": query,
             "registered_tools": _tool_catalog(),
             "max_tool_calls": MAX_TOOL_CALLS,
         },
         ensure_ascii=False,
     )
+    parsed: RequestPlan | GeneratedAnswer | None = None
     try:
         parsed = _validated_model_output(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             user_prompt=prompt,
             output_schema=RequestPlan,
+            trace_id=trace_id,
         )
-        plan = _validate_plan_tool_arguments(cast(RequestPlan, parsed))
-    except (ModelResponseError, ValidationError, ValueError):
-        logger.warning("Structured request planning failed closed.")
+        plan = cast(RequestPlan, parsed)
+        selected_tool_names = tuple(
+            tool.name for tool in plan.tool_calls
+        )
+        plan = validate_registered_plan(plan)
+    except InvalidPlannedArgumentsError:
+        return PlannerEvaluationResult(
+            plan=None,
+            error_category="invalid_arguments",
+            selected_tool_names=selected_tool_names,
+        )
+    except ValidationError:
+        return PlannerEvaluationResult(None, "invalid_plan", ())
+    except ValueError:
+        names = (
+            tuple(tool.name for tool in parsed.tool_calls)
+            if isinstance(parsed, RequestPlan)
+            else ()
+        )
+        return PlannerEvaluationResult(None, "invalid_plan", names)
+    except ModelResponseError as exc:
+        return PlannerEvaluationResult(None, exc.error_category, ())
+    return PlannerEvaluationResult(plan, None, selected_tool_names)
+
+def _plan_node(state: AgentState) -> dict[str, object]:
+    planner_result = evaluate_planner_query(
+        state["query"],
+        trace_id=state["trace_id"],
+    )
+    plan = planner_result.plan
+    error_category = planner_result.error_category
+    if plan is None:
+        logger.warning("Agent planner failed closed: %s", error_category)
         return {
             "plan": RequestPlan(mode="unsupported"),
+            "execution_mode": "unsupported",
             "safe_error": "planning_unavailable",
         }
-    return {"plan": plan, "safe_error": None}
+    for selected_tool in plan.tool_calls:
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="tool_selection",
+            outcome="selected",
+            mode=plan.mode,
+            tool_name=selected_tool.name,
+        )
+    return {
+        "plan": plan,
+        "execution_mode": plan.mode,
+        "safe_error": None,
+    }
 
 
 def _route_plan(state: AgentState) -> str:
@@ -180,6 +280,12 @@ def _authorize_plan_node(state: AgentState) -> dict[str, object]:
     if plan is None or plan.mode not in {"rag", "mixed"}:
         return {"safe_error": state["safe_error"]}
     if has_permission(state["db"], state["actor"], "documents:read"):
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="permission_check",
+            outcome="allowed",
+            mode=plan.mode,
+        )
         return {"safe_error": state["safe_error"]}
 
     record_audit_event(
@@ -191,6 +297,13 @@ def _authorize_plan_node(state: AgentState) -> dict[str, object]:
         outcome="denied",
         details={"execution_mode": plan.mode, "source": "rag"},
     )
+    emit_agent_event(
+        trace_id=state["trace_id"],
+        event="permission_check",
+        outcome="denied",
+        mode=plan.mode,
+        error_category="documents_read_denied",
+    )
     return {"safe_error": "permission_denied"}
 
 
@@ -201,20 +314,37 @@ def _route_authorized_plan(state: AgentState) -> str:
 
 
 def _retrieval_node(state: AgentState) -> dict[str, object]:
+    started = time.perf_counter()
     try:
         result = answer_rag_query(
             state["db"],
             state["actor"],
             state["query"],
             top_k=min(5, settings.rag_max_top_k),
+            trace_id=state["trace_id"],
         )
         validated = RAGQueryResponse.model_validate(result)
     except Exception:
-        logger.exception("Authorized document retrieval failed.")
+        logger.warning("Authorized document retrieval failed.")
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="rag_execution",
+            outcome="failure",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            mode=state["execution_mode"],
+            error_category="retrieval_unavailable",
+        )
         return {
             "rag_result": None,
             "safe_error": "retrieval_unavailable",
         }
+    emit_agent_event(
+        trace_id=state["trace_id"],
+        event="rag_execution",
+        outcome="success" if validated.sources else "no_results",
+        duration_ms=(time.perf_counter() - started) * 1000,
+        mode=state["execution_mode"],
+    )
     return {
         "rag_result": validated.model_dump(mode="json"),
         "safe_error": state["safe_error"],
@@ -235,6 +365,7 @@ def _execute_tools_node(state: AgentState) -> dict[str, object]:
 
     results: list[dict[str, object]] = []
     for selected_tool in plan.tool_calls:
+        started = time.perf_counter()
         try:
             result = execute_tool(
                 selected_tool.name,
@@ -243,6 +374,19 @@ def _execute_tools_node(state: AgentState) -> dict[str, object]:
                 actor=state["actor"],
             )
             status_value = result.status
+            emit_agent_event(
+                trace_id=state["trace_id"],
+                event="tool_execution",
+                outcome=status_value,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                mode=state["execution_mode"],
+                tool_name=selected_tool.name,
+                error_category=(
+                    "authorization_denied"
+                    if status_value == "denied"
+                    else None
+                ),
+            )
             if status_value != "ok":
                 return {
                     "tool_results": [],
@@ -259,16 +403,34 @@ def _execute_tools_node(state: AgentState) -> dict[str, object]:
                 }
             )
         except ToolArgumentsError:
+            emit_agent_event(
+                trace_id=state["trace_id"],
+                event="tool_execution",
+                outcome="failure",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                mode=state["execution_mode"],
+                tool_name=selected_tool.name,
+                error_category="invalid_arguments",
+            )
             return {
                 "tool_results": [],
                 "safe_error": "invalid_tool_plan",
             }
         except Exception:
-            logger.exception(
+            logger.warning(
                 "Registered tool failed during graph execution: %s",
                 selected_tool.name,
             )
             state["db"].rollback()
+            emit_agent_event(
+                trace_id=state["trace_id"],
+                event="tool_execution",
+                outcome="failure",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                mode=state["execution_mode"],
+                tool_name=selected_tool.name,
+                error_category="tool_unavailable",
+            )
             return {
                 "tool_results": [],
                 "safe_error": "tool_unavailable",
@@ -420,55 +582,127 @@ def _aggregate_node(state: AgentState) -> dict[str, object]:
 
 
 def _final_answer_node(state: AgentState) -> dict[str, object]:
+    started = time.perf_counter()
+    answer: str
     plan = state["plan"]
     if plan is None or plan.mode == "unsupported":
-        return {"answer": INSUFFICIENT_CONTEXT_ANSWER}
-    if state["safe_error"] == "permission_denied":
-        return {"answer": ACCESS_DENIED_ANSWER}
-    if state["safe_error"] in {
+        answer = INSUFFICIENT_CONTEXT_ANSWER
+    elif state["safe_error"] == "permission_denied":
+        answer = ACCESS_DENIED_ANSWER
+    elif state["safe_error"] in {
         "data_unavailable",
         "tool_unavailable",
         "invalid_tool_plan",
     }:
-        return {"answer": TOOL_FAILURE_ANSWER}
-    if state["safe_error"] == "retrieval_unavailable":
-        return {"answer": MODEL_UNAVAILABLE_ANSWER}
-
-    if plan.mode == "rag":
+        answer = TOOL_FAILURE_ANSWER
+    elif state["safe_error"] == "retrieval_unavailable":
+        answer = MODEL_UNAVAILABLE_ANSWER
+    elif plan.mode == "rag":
         rag_result = state["rag_result"]
         if rag_result is None:
-            return {"answer": MODEL_UNAVAILABLE_ANSWER}
-        answer = rag_result.get("answer")
-        if not isinstance(answer, str) or len(answer) > MAX_FINAL_ANSWER_CHARACTERS:
-            return {"answer": INSUFFICIENT_CONTEXT_ANSWER}
-        return {"answer": answer}
+            answer = MODEL_UNAVAILABLE_ANSWER
+        else:
+            rag_answer = rag_result.get("answer")
+            answer = (
+                rag_answer
+                if isinstance(rag_answer, str)
+                and len(rag_answer) <= MAX_FINAL_ANSWER_CHARACTERS
+                else INSUFFICIENT_CONTEXT_ANSWER
+            )
+    else:
+        try:
+            generated = _validated_model_output(
+                system_prompt=ANSWER_SYSTEM_PROMPT,
+                user_prompt=json.dumps(
+                    {
+                        "question": state["query"],
+                        "authorized_evidence": state["evidence"],
+                    },
+                    ensure_ascii=False,
+                ),
+                output_schema=GeneratedAnswer,
+                trace_id=state["trace_id"],
+            )
+            answer = cast(GeneratedAnswer, generated).answer
+        except ModelResponseError:
+            logger.warning("Grounded answer generation failed closed.")
+            answer = MODEL_UNAVAILABLE_ANSWER
+    if answer == ACCESS_DENIED_ANSWER:
+        final_outcome = "denied"
+    elif answer == INSUFFICIENT_CONTEXT_ANSWER:
+        final_outcome = "abstention"
+    elif answer in {TOOL_FAILURE_ANSWER, MODEL_UNAVAILABLE_ANSWER}:
+        final_outcome = "failure"
+    else:
+        final_outcome = "success"
+    emit_agent_event(
+        trace_id=state["trace_id"],
+        event="final_response",
+        outcome=final_outcome,
+        duration_ms=(time.perf_counter() - started) * 1000,
+        mode=state["execution_mode"],
+        error_category=state["safe_error"],
+    )
+    return {"answer": answer}
 
-    try:
-        generated = _validated_model_output(
-            system_prompt=ANSWER_SYSTEM_PROMPT,
-            user_prompt=json.dumps(
-                {
-                    "question": state["query"],
-                    "authorized_evidence": state["evidence"],
-                },
-                ensure_ascii=False,
+
+def _instrument_node(name: str, node):
+    def run(state: AgentState) -> dict[str, object]:
+        started = time.perf_counter()
+        try:
+            update = node(state)
+        except Exception:
+            emit_agent_event(
+                trace_id=state["trace_id"],
+                event="node_execution",
+                outcome="failure",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                mode=state["execution_mode"],
+                node=name,
+                error_category="node_failure",
+            )
+            raise
+        mode = update.get("execution_mode", state["execution_mode"])
+        error_category = update.get("safe_error", state["safe_error"])
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="node_execution",
+            outcome="completed",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            mode=mode if isinstance(mode, str) else None,
+            node=name,
+            error_category=(
+                error_category if isinstance(error_category, str) else None
             ),
-            output_schema=GeneratedAnswer,
         )
-    except ModelResponseError:
-        logger.warning("Grounded answer generation failed closed.")
-        return {"answer": MODEL_UNAVAILABLE_ANSWER}
-    return {"answer": cast(GeneratedAnswer, generated).answer}
+        return update
+
+    return run
 
 
 def build_agent_graph():
     graph = StateGraph(AgentState)
-    graph.add_node("plan", _plan_node)
-    graph.add_node("authorize_plan", _authorize_plan_node)
-    graph.add_node("retrieve_documents", _retrieval_node)
-    graph.add_node("execute_structured_tools", _execute_tools_node)
-    graph.add_node("aggregate_results", _aggregate_node)
-    graph.add_node("generate_answer", _final_answer_node)
+    graph.add_node("plan", _instrument_node("plan", _plan_node))
+    graph.add_node(
+        "authorize_plan",
+        _instrument_node("authorize_plan", _authorize_plan_node),
+    )
+    graph.add_node(
+        "retrieve_documents",
+        _instrument_node("retrieve_documents", _retrieval_node),
+    )
+    graph.add_node(
+        "execute_structured_tools",
+        _instrument_node("execute_structured_tools", _execute_tools_node),
+    )
+    graph.add_node(
+        "aggregate_results",
+        _instrument_node("aggregate_results", _aggregate_node),
+    )
+    graph.add_node(
+        "generate_answer",
+        _instrument_node("generate_answer", _final_answer_node),
+    )
 
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "authorize_plan")
@@ -514,30 +748,73 @@ def run_agent_query(
     if len(query) > 4000:
         raise ValueError("Question exceeds the supported length.")
 
+    trace_id = str(uuid4())
+    graph_started = time.perf_counter()
     initial_state: AgentState = {
+        "trace_id": trace_id,
         "query": query.strip(),
         "actor": actor,
         "db": db,
         "plan": None,
+        "execution_mode": None,
         "safe_error": None,
         "rag_result": None,
         "tool_results": [],
         "evidence": "",
         "answer": "",
         "sources": [],
+        "telemetry_events": [],
     }
-    result = _agent_graph.invoke(
-        initial_state,
-        config={"recursion_limit": 8},
-    )
+    try:
+        result = _agent_graph.invoke(
+            initial_state,
+            config={"recursion_limit": 8},
+        )
+    except Exception:
+        emit_agent_event(
+            trace_id=trace_id,
+            event="graph_execution",
+            outcome="failure",
+            duration_ms=(time.perf_counter() - graph_started) * 1000,
+            error_category="graph_failure",
+        )
+        raise
     answer = result.get("answer")
     if not isinstance(answer, str) or not answer:
         logger.error("Agent graph completed without a valid answer.")
         answer = INSUFFICIENT_CONTEXT_ANSWER
     if len(answer) > MAX_FINAL_ANSWER_CHARACTERS:
         answer = INSUFFICIENT_CONTEXT_ANSWER
+    safe_error = result.get("safe_error")
+    if answer == ACCESS_DENIED_ANSWER:
+        graph_outcome = "denied"
+    elif answer == INSUFFICIENT_CONTEXT_ANSWER:
+        graph_outcome = "abstention"
+    elif answer in {TOOL_FAILURE_ANSWER, MODEL_UNAVAILABLE_ANSWER}:
+        graph_outcome = "failure"
+    elif safe_error is not None:
+        graph_outcome = "failure"
+    else:
+        graph_outcome = "success"
+    emit_agent_event(
+        trace_id=trace_id,
+        event="graph_execution",
+        outcome=graph_outcome,
+        duration_ms=(time.perf_counter() - graph_started) * 1000,
+        mode=(
+            result.get("execution_mode")
+            if isinstance(result.get("execution_mode"), str)
+            else None
+        ),
+        error_category=(
+            result.get("safe_error")
+            if isinstance(result.get("safe_error"), str)
+            else None
+        ),
+    )
     sources = result.get("sources")
     return {
         "answer": answer,
         "sources": sources if isinstance(sources, list) else [],
+        "trace_id": trace_id,
     }
