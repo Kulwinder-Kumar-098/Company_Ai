@@ -32,6 +32,15 @@ PERMISSIONS = [
     ("tasks:read:assigned", "View tasks in managed or assigned projects"),
     ("projects:manage", "Manage projects"),
     ("reports:read", "View permitted reports"),
+    (
+        "performance:read:self",
+        "View the authenticated employee's performance metrics",
+    ),
+    (
+        "performance:read:department",
+        "View performance metrics for the authenticated employee's department",
+    ),
+    ("performance:read:all", "View performance metrics across all departments"),
 ]
 
 
@@ -71,6 +80,7 @@ def seed_data():
                 "employees:create",
                 "employees:update",
                 "reports:read",
+                "performance:read:department",
             ],
             "manager": [
                 "policy:read",
@@ -82,6 +92,7 @@ def seed_data():
                 "projects:read",
                 "projects:manage",
                 "reports:read",
+                "performance:read:self",
             ],
             "employee": [
                 "policy:read",
@@ -90,6 +101,7 @@ def seed_data():
                 "projects:read:assigned",
                 "tasks:read:assigned",
                 "projects:read",
+                "performance:read:self",
             ],
         }
 

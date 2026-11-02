@@ -132,6 +132,18 @@ pulling these permission changes.
   to. Admins can read all projects.
 - Project managers can read all tasks in projects they manage; other assigned
   users can read only their own tasks.
+- Structured-data tools use the same database-backed employee and project
+  permissions. Their backend caller supplies the authenticated employee and
+  database session; tool arguments cannot select or impersonate the acting user.
+- Performance access has separate, additive permissions: `admin` receives
+  `performance:read:all`; `hr` receives
+  `performance:read:department`, scoped to the HR user's own department;
+  `manager` and `employee` receive `performance:read:self`. The data model has
+  no employee-to-manager relationship, so manager performance access is limited
+  to the manager's own records. HR department permission does not imply
+  cross-department performance access, even though HR can read employee
+  profiles across departments. No migration is needed; run
+  `python -m app.seed` to add the permissions and role mappings.
 - Successful sensitive reads and authorization denials are written to
   `audit_events`.
 

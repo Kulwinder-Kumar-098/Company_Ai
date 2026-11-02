@@ -1,1 +1,192 @@
-"""Tool registration."""
+"""Framework-independent registry for authorized structured-data tools."""
+
+from dataclasses import dataclass
+from typing import Callable
+
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.models.employee import Employee
+from app.schemas.tools import (
+    EmployeeData,
+    EmployeeSearchInput,
+    EmployeeTasksInput,
+    EmployeeToolInput,
+    OverdueTasksInput,
+    PerformanceDepartmentInput,
+    PerformanceMetricData,
+    PerformanceMetricsInput,
+    PerformanceSummaryData,
+    ProjectData,
+    ProjectStatusData,
+    ProjectTaskInput,
+    ProjectTeamInput,
+    ProjectToolInput,
+    TaskData,
+    TaskSearchInput,
+    TaskToolInput,
+    TeamMemberData,
+    ToolResult,
+)
+from app.tools.hr_tools import (
+    get_department_performance_summary,
+    get_employee_details,
+    get_employee_performance_metrics,
+    get_employee_performance_summary,
+    get_employee_tasks,
+    get_performance_metrics,
+    search_employees,
+)
+from app.tools.project_tools import (
+    get_project_details,
+    get_project_status,
+    get_project_tasks,
+    get_project_team,
+)
+from app.tools.technical_tools import (
+    get_overdue_tasks,
+    get_task_details,
+    search_tasks,
+)
+
+
+ToolHandler = Callable[..., BaseModel]
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    description: str
+    input_schema: type[BaseModel]
+    output_schema: type[BaseModel]
+    handler: ToolHandler
+
+
+TOOLS: dict[str, ToolDefinition] = {
+    definition.name: definition
+    for definition in (
+        ToolDefinition(
+            "get_employee_details",
+            "Read an employee record allowed by the actor's employee permissions. "
+            "Omit employee_id to read the authenticated actor's own record.",
+            EmployeeToolInput,
+            ToolResult[EmployeeData],
+            get_employee_details,
+        ),
+        ToolDefinition(
+            "search_employees",
+            "Search only employee records visible to the authenticated actor.",
+            EmployeeSearchInput,
+            ToolResult[list[EmployeeData]],
+            search_employees,
+        ),
+        ToolDefinition(
+            "get_employee_tasks",
+            "List tasks assigned to an employee, subject to employee and task scope.",
+            EmployeeTasksInput,
+            ToolResult[list[TaskData]],
+            get_employee_tasks,
+        ),
+        ToolDefinition(
+            "get_employee_performance_metrics",
+            "Read one employee's metrics under explicit performance scope. "
+            "Omit employee_id to select the authenticated actor.",
+            PerformanceMetricsInput,
+            ToolResult[list[PerformanceMetricData]],
+            get_employee_performance_metrics,
+        ),
+        ToolDefinition(
+            "get_performance_metrics",
+            "Read performance metrics filtered to the actor's explicit self, "
+            "department, or all-data permission.",
+            PerformanceMetricsInput,
+            ToolResult[list[PerformanceMetricData]],
+            get_performance_metrics,
+        ),
+        ToolDefinition(
+            "get_employee_performance_summary",
+            "Aggregate one employee's performance metrics only when the actor "
+            "has explicit permission for that employee's scope.",
+            EmployeeToolInput,
+            ToolResult[PerformanceSummaryData],
+            get_employee_performance_summary,
+        ),
+        ToolDefinition(
+            "get_department_performance_summary",
+            "Aggregate metrics for the actor's permitted department, or any "
+            "department with performance:read:all.",
+            PerformanceDepartmentInput,
+            ToolResult[PerformanceSummaryData],
+            get_department_performance_summary,
+        ),
+        ToolDefinition(
+            "get_project_details",
+            "Read project details after verifying project visibility.",
+            ProjectToolInput,
+            ToolResult[ProjectData],
+            get_project_details,
+        ),
+        ToolDefinition(
+            "get_project_status",
+            "Read status and completion fields for a visible project.",
+            ProjectToolInput,
+            ToolResult[ProjectStatusData],
+            get_project_status,
+        ),
+        ToolDefinition(
+            "get_project_tasks",
+            "List tasks in a visible project; managers see all tasks only in "
+            "projects they manage, while other assigned users see their own.",
+            ProjectTaskInput,
+            ToolResult[list[TaskData]],
+            get_project_tasks,
+        ),
+        ToolDefinition(
+            "get_project_team",
+            "List only the manager and task assignees attached to a visible project.",
+            ProjectTeamInput,
+            ToolResult[list[TeamMemberData]],
+            get_project_team,
+        ),
+        ToolDefinition(
+            "get_task_details",
+            "Read one task only if its project and task assignment are visible.",
+            TaskToolInput,
+            ToolResult[TaskData],
+            get_task_details,
+        ),
+        ToolDefinition(
+            "search_tasks",
+            "Search tasks after applying the actor's project and task visibility "
+            "filters in the database.",
+            TaskSearchInput,
+            ToolResult[list[TaskData]],
+            search_tasks,
+        ),
+        ToolDefinition(
+            "get_overdue_tasks",
+            "List visible, incomplete tasks whose due date is before today.",
+            OverdueTasksInput,
+            ToolResult[list[TaskData]],
+            get_overdue_tasks,
+        ),
+    )
+}
+
+
+def execute_tool(
+    name: str,
+    arguments: dict[str, object] | BaseModel,
+    *,
+    db: Session,
+    actor: Employee,
+) -> BaseModel:
+    """Validate arguments and execute using trusted backend context."""
+    definition = TOOLS[name]
+    raw_arguments = (
+        arguments.model_dump()
+        if isinstance(arguments, BaseModel)
+        else arguments
+    )
+    validated = definition.input_schema.model_validate(raw_arguments)
+    return definition.handler(db, actor, validated)

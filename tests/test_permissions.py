@@ -233,6 +233,27 @@ def test_seeded_roles_receive_policy_read_permission(
     assert privileged_role_rows == [
         ("admin", "employees:assign:privileged")
     ]
+    performance_rows = db_session.execute(
+        select(Role.name, Permission.code)
+        .join(Role.permissions)
+        .where(
+            Permission.code.in_(
+                (
+                    "performance:read:self",
+                    "performance:read:department",
+                    "performance:read:all",
+                )
+            )
+        )
+    ).all()
+    assert set(performance_rows) == {
+        ("admin", "performance:read:all"),
+        ("admin", "performance:read:department"),
+        ("admin", "performance:read:self"),
+        ("hr", "performance:read:department"),
+        ("manager", "performance:read:self"),
+        ("employee", "performance:read:self"),
+    }
     assert unrelated_permission in employee_role.permissions
 
     before = (
