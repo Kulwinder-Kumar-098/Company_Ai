@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app.models.employee import Employee
@@ -51,6 +51,18 @@ from app.tools.technical_tools import (
 
 
 ToolHandler = Callable[..., BaseModel]
+
+
+class ToolNotFoundError(LookupError):
+    """Raised when a requested tool is not registered."""
+
+
+class ToolArgumentsError(ValueError):
+    """Raised when arguments do not match a registered tool's schema."""
+
+
+class ToolOutputError(RuntimeError):
+    """Raised when a handler returns data outside its declared output schema."""
 
 
 @dataclass(frozen=True)
@@ -182,11 +194,21 @@ def execute_tool(
     actor: Employee,
 ) -> BaseModel:
     """Validate arguments and execute using trusted backend context."""
-    definition = TOOLS[name]
+    try:
+        definition = TOOLS[name]
+    except KeyError as exc:
+        raise ToolNotFoundError(name) from exc
     raw_arguments = (
         arguments.model_dump()
         if isinstance(arguments, BaseModel)
         else arguments
     )
-    validated = definition.input_schema.model_validate(raw_arguments)
-    return definition.handler(db, actor, validated)
+    try:
+        validated = definition.input_schema.model_validate(raw_arguments)
+    except ValidationError as exc:
+        raise ToolArgumentsError from exc
+    output = definition.handler(db, actor, validated)
+    try:
+        return definition.output_schema.model_validate(output)
+    except ValidationError as exc:
+        raise ToolOutputError from exc

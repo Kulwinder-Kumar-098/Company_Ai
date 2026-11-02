@@ -15,6 +15,7 @@ PERMISSIONS = [
     ("documents:publish", "Publish company-wide documents"),
     ("documents:delete", "Delete uploaded documents"),
     ("documents:version", "Upload new document versions"),
+    ("chat:use", "Use the authenticated Company AI chat assistant"),
     ("policy:read", "Read company policies"),
     ("employees:read", "View employee records"),
     ("employees:read:all", "View employee records across departments"),
@@ -72,6 +73,7 @@ def seed_data():
         role_permissions = {
             "admin": list(permissions),
             "hr": [
+                "chat:use",
                 "policy:read",
                 "documents:read",
                 "documents:version",
@@ -83,6 +85,7 @@ def seed_data():
                 "performance:read:department",
             ],
             "manager": [
+                "chat:use",
                 "policy:read",
                 "documents:read",
                 "documents:version",
@@ -95,6 +98,7 @@ def seed_data():
                 "performance:read:self",
             ],
             "employee": [
+                "chat:use",
                 "policy:read",
                 "documents:read",
                 "employees:read:self",

@@ -254,6 +254,17 @@ def test_seeded_roles_receive_policy_read_permission(
         ("manager", "performance:read:self"),
         ("employee", "performance:read:self"),
     }
+    chat_rows = db_session.execute(
+        select(Role.name, Permission.code)
+        .join(Role.permissions)
+        .where(Permission.code == "chat:use")
+    ).all()
+    assert set(chat_rows) == {
+        ("admin", "chat:use"),
+        ("employee", "chat:use"),
+        ("hr", "chat:use"),
+        ("manager", "chat:use"),
+    }
     assert unrelated_permission in employee_role.permissions
 
     before = (

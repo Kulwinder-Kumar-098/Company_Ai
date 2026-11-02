@@ -1,13 +1,23 @@
 """Authorization and behavior tests for structured-data tools."""
 
 from datetime import date, timedelta
+import json
 
+import jwt
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.agents import orchestrator
+from app.agents.workflows import GeneratedAnswer, RequestPlan
+from app.api.dependencies import get_db
+from app.api.tool_routes import router as tool_router
+from app.core.config import settings
 from app.models import (
     AuditEvent,
     Base,
@@ -44,7 +54,7 @@ from app.tools.project_tools import (
     get_project_tasks,
     get_project_team,
 )
-from app.tools.registry import TOOLS, execute_tool
+from app.tools.registry import TOOLS, ToolArgumentsError, execute_tool
 from app.tools.technical_tools import (
     get_overdue_tasks,
     get_task_details,
@@ -71,6 +81,7 @@ def tool_db():
             "performance:read:self",
             "performance:read:department",
             "performance:read:all",
+            "documents:read",
         )
         permissions = {
             code: Permission(code=code, description=code) for code in codes
@@ -285,6 +296,33 @@ def tool_db():
         yield db, people
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture
+def tool_client(tool_db):
+    db, employees = tool_db
+    app = FastAPI()
+    app.include_router(tool_router)
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client, db, employees
+    app.dependency_overrides.clear()
+
+
+def _token(employee_id: str) -> str:
+    return jwt.encode(
+        {"sub": employee_id},
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def _headers(employee_id: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {_token(employee_id)}"}
 
 
 def test_employee_self_access_and_sensitive_output_fields(tool_db):
@@ -548,10 +586,701 @@ def test_registry_requires_trusted_actor_and_rejects_identity_arguments(tool_db)
         actor=employees["EMP-ONE"],
     )
     assert own.data.employee_id == "EMP-ONE"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ToolArgumentsError):
         execute_tool(
             "get_employee_details",
             {"actor_employee_id": "ADMIN"},
             db=db,
             actor=employees["EMP-ONE"],
         )
+
+
+def test_tool_endpoint_requires_valid_jwt(tool_client):
+    client, _, _ = tool_client
+
+    missing = client.post(
+        "/tools/execute",
+        json={"tool_name": "get_employee_details", "arguments": {}},
+    )
+    invalid = client.post(
+        "/tools/execute",
+        json={"tool_name": "get_employee_details", "arguments": {}},
+        headers={"Authorization": "Bearer invalid"},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+
+
+def test_employee_self_tool_and_cross_employee_denial_are_audited(tool_client):
+    client, db, _ = tool_client
+
+    own = client.post(
+        "/tools/execute",
+        json={"tool_name": "get_employee_details", "arguments": {}},
+        headers=_headers("EMP-ONE"),
+    )
+    other = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_employee_details",
+            "arguments": {"employee_id": "EMP-TWO"},
+        },
+        headers=_headers("EMP-ONE"),
+    )
+
+    assert own.status_code == 200
+    assert own.json()["result"]["data"]["employee_id"] == "EMP-ONE"
+    assert other.status_code == 403
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "structured_tool",
+            AuditEvent.resource_id == "EMP-TWO",
+            AuditEvent.outcome == "denied",
+        )
+    )
+    assert event is not None
+    assert event.details == {"tool_name": "get_employee_details"}
+
+
+def test_manager_cannot_read_unrelated_project_via_endpoint(tool_client):
+    client, db, _ = tool_client
+
+    response = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_project_details",
+            "arguments": {"project_id": "P-UNRELATED"},
+        },
+        headers=_headers("MGR"),
+    )
+
+    assert response.status_code == 403
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "MGR",
+            AuditEvent.resource_type == "structured_tool",
+            AuditEvent.resource_id == "P-UNRELATED",
+            AuditEvent.outcome == "denied",
+        )
+    ) is not None
+
+
+@pytest.mark.parametrize("actor_id", ["HR", "ADMIN"])
+def test_hr_and_admin_employee_scopes_via_endpoint(tool_client, actor_id):
+    client, _, _ = tool_client
+
+    response = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_employee_details",
+            "arguments": {"employee_id": "EMP-ONE"},
+        },
+        headers=_headers(actor_id),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["data"]["employee_id"] == "EMP-ONE"
+
+
+def test_unknown_tool_and_invalid_arguments_are_safe_client_errors(tool_client):
+    client, _, _ = tool_client
+
+    unknown = client.post(
+        "/tools/execute",
+        json={"tool_name": "run_sql", "arguments": {}},
+        headers=_headers("EMP-ONE"),
+    )
+    invalid = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_employee_details",
+            "arguments": {"employee_id": "EMP-ONE", "unexpected": "value"},
+        },
+        headers=_headers("EMP-ONE"),
+    )
+
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Unknown tool."
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == "Invalid tool arguments."
+
+
+def test_endpoint_rejects_actor_spoofing_at_both_request_levels(tool_client):
+    client, _, _ = tool_client
+
+    nested_spoof = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_employee_details",
+            "arguments": {"actor_employee_id": "ADMIN"},
+        },
+        headers=_headers("EMP-ONE"),
+    )
+    top_level_spoof = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "get_employee_details",
+            "arguments": {},
+            "employee_id": "ADMIN",
+        },
+        headers=_headers("EMP-ONE"),
+    )
+
+    assert nested_spoof.status_code == 422
+    assert nested_spoof.json()["detail"] == "Invalid tool arguments."
+    assert top_level_spoof.status_code == 422
+
+
+def test_tool_exception_does_not_expose_internal_details(tool_client, monkeypatch):
+    from app.api import tool_routes
+
+    client, db, _ = tool_client
+
+    def fail_execution(*args, **kwargs):
+        raise RuntimeError("private database connection detail")
+
+    monkeypatch.setattr(tool_routes, "execute_tool", fail_execution)
+    response = client.post(
+        "/tools/execute",
+        json={"tool_name": "get_employee_details", "arguments": {}},
+        headers=_headers("EMP-ONE"),
+    )
+
+    assert response.status_code == 500
+    assert "private database connection detail" not in response.text
+    assert response.json()["detail"] == "Tool execution failed."
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "structured_tool",
+            AuditEvent.outcome == "failure",
+        )
+    ) is not None
+
+
+def test_tool_is_not_reported_successful_when_endpoint_audit_fails(
+    tool_client,
+    monkeypatch,
+):
+    from app.api import tool_routes
+
+    client, _, _ = tool_client
+
+    def fail_audit(*args, **kwargs):
+        raise SQLAlchemyError("private audit backend detail")
+
+    monkeypatch.setattr(tool_routes, "record_audit_event", fail_audit)
+    response = client.post(
+        "/tools/execute",
+        json={"tool_name": "get_employee_details", "arguments": {}},
+        headers=_headers("EMP-ONE"),
+    )
+
+    assert response.status_code == 503
+    assert "private audit backend detail" not in response.text
+    assert response.json()["detail"] == "Tool execution is temporarily unavailable."
+
+
+def _stub_agent_models(
+    monkeypatch,
+    plan,
+    *,
+    answer="Grounded answer.",
+    capture=None,
+):
+    def request_model_json(*, system_prompt, user_prompt, output_schema):
+        if output_schema is RequestPlan:
+            return (
+                plan
+                if isinstance(plan, str)
+                else plan.model_dump_json()
+            )
+        if capture is not None:
+            capture.append(user_prompt)
+        return GeneratedAnswer(answer=answer).model_dump_json()
+
+    monkeypatch.setattr(orchestrator, "_request_model_json", request_model_json)
+
+
+def _rag_response(answer="Document answer."):
+    return {
+        "answer": answer,
+        "conversation_id": "stateless-request",
+        "sources": [
+            {
+                "source_id": "S1",
+                "document_id": 41,
+                "filename": "approved-policy.pdf",
+                "version_number": 1,
+                "page_number": 2,
+                "chunk_id": 15,
+                "chunk_index": 3,
+                "relevance_score": 0.91,
+                "excerpt": "Authorized policy excerpt.",
+            }
+        ],
+    }
+
+
+def test_agent_graph_routes_document_only_question_to_secure_rag(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    employees["EMP-ONE"].role.permissions.append(
+        db.scalar(select(Permission).where(Permission.code == "documents:read"))
+    )
+    db.commit()
+    rag_calls = []
+    _stub_agent_models(monkeypatch, RequestPlan(mode="rag"))
+
+    def fake_rag(session, actor, query, **kwargs):
+        rag_calls.append((session, actor, query, kwargs))
+        return _rag_response()
+
+    monkeypatch.setattr(orchestrator, "answer_rag_query", fake_rag)
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "What does the policy say?"
+    )
+
+    assert result["answer"] == "Document answer."
+    assert result["sources"][0]["name"] == "approved-policy.pdf"
+    assert result["sources"][0]["source_id"] == "S1"
+    assert result["sources"][0]["chunk_index"] == 3
+    assert rag_calls == [
+        (db, employees["EMP-ONE"], "What does the policy say?", {"top_k": 5})
+    ]
+
+
+def test_agent_graph_executes_only_registered_structured_tool(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="structured",
+            tool_calls=[
+                {"name": "get_employee_details", "arguments": {}},
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail("RAG should not be called"),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Show my employee profile"
+    )
+
+    assert result["answer"] == "Grounded answer."
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "employee",
+            AuditEvent.outcome == "success",
+        )
+    )
+    assert event is not None
+
+
+def test_structured_only_denies_user_without_required_tool_permission(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="structured",
+            tool_calls=[
+                {"name": "get_employee_details", "arguments": {}},
+            ],
+        ),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["GUEST"], "Show my employee profile"
+    )
+
+    assert result["answer"] == orchestrator.ACCESS_DENIED_ANSWER
+    assert result["sources"] == []
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "GUEST",
+            AuditEvent.resource_type == "employee",
+            AuditEvent.outcome == "denied",
+        )
+    ) is not None
+
+
+def test_rag_only_requires_documents_read_and_audits_denial(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(monkeypatch, RequestPlan(mode="rag"))
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail(
+            "RAG must not execute without documents:read"
+        ),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "What does company policy say?"
+    )
+
+    assert result["answer"] == orchestrator.ACCESS_DENIED_ANSWER
+    assert result["sources"] == []
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "permission",
+            AuditEvent.resource_id == "documents:read",
+            AuditEvent.outcome == "denied",
+        )
+    ) is not None
+
+
+def test_rag_only_succeeds_after_documents_permission_check(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    documents_permission = db.scalar(
+        select(Permission).where(Permission.code == "documents:read")
+    )
+    employees["EMP-ONE"].role.permissions.append(documents_permission)
+    db.commit()
+    _stub_agent_models(monkeypatch, RequestPlan(mode="rag"))
+    rag_calls = []
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *args, **kwargs: rag_calls.append((args, kwargs))
+        or _rag_response(),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "What does company policy say?"
+    )
+
+    assert result["answer"] == "Document answer."
+    assert result["sources"][0]["source_id"] == "S1"
+    assert len(rag_calls) == 1
+
+
+def test_agent_graph_mixed_path_aggregates_rag_and_structured_results(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    employees["EMP-ONE"].role.permissions.append(
+        db.scalar(select(Permission).where(Permission.code == "documents:read"))
+    )
+    db.commit()
+    prompts = []
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="mixed",
+            tool_calls=[
+                {"name": "get_employee_details", "arguments": {}},
+            ],
+        ),
+        capture=prompts,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: _rag_response(),
+    )
+
+    result = orchestrator.run_agent_query(
+        db,
+        employees["EMP-ONE"],
+        "Use the policy and my employee details",
+    )
+
+    assert result["answer"] == "Grounded answer."
+    assert result["sources"][0]["name"] == "approved-policy.pdf"
+    assert len(prompts) == 1
+    assert "Authorized policy excerpt." in prompts[0]
+    assert "EMP-ONE" in prompts[0]
+
+
+def test_mixed_request_without_documents_permission_denies_before_tools(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="mixed",
+            tool_calls=[
+                {"name": "get_employee_details", "arguments": {}},
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail("Unauthorized RAG attempted"),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Mix policy and my employee profile"
+    )
+
+    assert result["answer"] == orchestrator.ACCESS_DENIED_ANSWER
+    assert result["sources"] == []
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "employee",
+            AuditEvent.outcome == "success",
+        )
+    ) is None
+
+
+def test_mixed_request_tool_denial_suppresses_rag_and_all_results(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    documents_permission = db.scalar(
+        select(Permission).where(Permission.code == "documents:read")
+    )
+    employees["EMP-ONE"].role.permissions.append(documents_permission)
+    db.commit()
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="mixed",
+            tool_calls=[
+                {
+                    "name": "get_employee_details",
+                    "arguments": {"employee_id": "EMP-TWO"},
+                },
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Mixed all-or-nothing execution must skip RAG after tool denial"
+        ),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Policy and EMP-TWO's employee details"
+    )
+
+    assert result["answer"] == orchestrator.ACCESS_DENIED_ANSWER
+    assert result["sources"] == []
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "employee",
+            AuditEvent.resource_id == "EMP-TWO",
+            AuditEvent.outcome == "denied",
+        )
+    ) is not None
+
+
+def test_agent_graph_unsupported_question_returns_insufficient_response(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(monkeypatch, RequestPlan(mode="unsupported"))
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail("Unsupported route invoked RAG"),
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["GUEST"], "Tell me a fictional fact"
+    )
+
+    assert result["answer"] == (
+        "The available documents do not provide enough information to answer "
+        "that question."
+    )
+    assert result["sources"] == []
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        json.dumps(
+            {
+                "mode": "structured",
+                "tool_calls": [{"name": "unknown_tool", "arguments": {}}],
+            }
+        ),
+        json.dumps(
+            {
+                "mode": "structured",
+                "tool_calls": [
+                    {
+                        "name": "get_employee_details",
+                        "arguments": {"actor_employee_id": "ADMIN"},
+                    }
+                ],
+            }
+        ),
+    ],
+)
+def test_agent_graph_rejects_unknown_tools_and_spoofed_arguments(
+    tool_db,
+    monkeypatch,
+    plan,
+):
+    db, employees = tool_db
+    _stub_agent_models(monkeypatch, plan)
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Look up a profile"
+    )
+
+    assert result["answer"] == (
+        "The available documents do not provide enough information to answer "
+        "that question."
+    )
+    assert db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "employee",
+        )
+    ) is None
+
+
+def test_agent_graph_preserves_tool_authorization_denial(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    prompts = []
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="structured",
+            tool_calls=[
+                {
+                    "name": "get_employee_details",
+                    "arguments": {"employee_id": "EMP-TWO"},
+                }
+            ],
+        ),
+        capture=prompts,
+    )
+
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Show EMP-TWO's employee details"
+    )
+
+    assert result["answer"] == orchestrator.ACCESS_DENIED_ANSWER
+    assert result["sources"] == []
+    assert prompts == []
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.actor_employee_id == "EMP-ONE",
+            AuditEvent.resource_type == "employee",
+            AuditEvent.resource_id == "EMP-TWO",
+            AuditEvent.outcome == "denied",
+        )
+    )
+    assert event is not None
+
+
+def test_agent_graph_handles_model_unavailability_and_malformed_output(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    calls = []
+
+    def unavailable(**_kwargs):
+        calls.append(True)
+        raise ConnectionError("internal Ollama host")
+
+    monkeypatch.setattr(orchestrator, "_request_model_json", unavailable)
+    result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "A question"
+    )
+    assert len(calls) == 2
+    assert result["answer"] == (
+        "The available documents do not provide enough information to answer "
+        "that question."
+    )
+
+    malformed_calls = []
+
+    def malformed(**_kwargs):
+        malformed_calls.append(True)
+        return "not json"
+
+    monkeypatch.setattr(orchestrator, "_request_model_json", malformed)
+    malformed_result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "Another question"
+    )
+    assert len(malformed_calls) == 2
+    assert malformed_result["sources"] == []
+
+
+def test_agent_graph_bounds_tool_calls_and_sanitizes_tool_failures(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    excessive = json.dumps(
+        {
+            "mode": "structured",
+            "tool_calls": [
+                {"name": "get_employee_details", "arguments": {}}
+                for _ in range(orchestrator.MAX_TOOL_CALLS + 1)
+            ],
+        }
+    )
+    _stub_agent_models(monkeypatch, excessive)
+    excessive_result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "A question"
+    )
+    assert excessive_result["answer"] == (
+        "The available documents do not provide enough information to answer "
+        "that question."
+    )
+
+    prompt_values = []
+    _stub_agent_models(
+        monkeypatch,
+        RequestPlan(
+            mode="structured",
+            tool_calls=[
+                {"name": "get_employee_details", "arguments": {}},
+            ],
+        ),
+        capture=prompt_values,
+        answer="Safe fallback.",
+    )
+
+    def fail_tool(*_args, **_kwargs):
+        raise RuntimeError("private database connection detail")
+
+    monkeypatch.setattr(orchestrator, "execute_tool", fail_tool)
+    failed_result = orchestrator.run_agent_query(
+        db, employees["EMP-ONE"], "A question"
+    )
+    assert failed_result["answer"] == orchestrator.TOOL_FAILURE_ANSWER
+    assert prompt_values == []

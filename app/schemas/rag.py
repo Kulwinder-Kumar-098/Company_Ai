@@ -36,6 +36,7 @@ class RAGSource(BaseModel):
     version_number: int
     page_number: int | None
     chunk_id: int
+    chunk_index: int | None = None
     relevance_score: float
     excerpt: str
 

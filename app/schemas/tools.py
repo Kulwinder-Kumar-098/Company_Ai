@@ -18,6 +18,16 @@ class ToolResult(BaseModel, Generic[T]):
     error: str | None = None
 
 
+class ToolExecuteRequest(ToolInput):
+    tool_name: str = Field(min_length=1, max_length=100)
+    arguments: dict[str, object]
+
+
+class ToolExecuteResponse(BaseModel):
+    tool_name: str
+    result: dict[str, object]
+
+
 class EmployeeToolInput(ToolInput):
     employee_id: str | None = Field(default=None, min_length=1, max_length=50)
 

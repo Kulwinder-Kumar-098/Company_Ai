@@ -96,10 +96,12 @@ the new embedding metadata/index manifest.
   `documents:delete` to remove the source file, chunks, and vector-index entry.
   A current version with history cannot be deleted individually; delete
   historical versions separately first.
-- `POST /chat/ask` accepts `{"message": "..."}` and requires `documents:read`.
-  Retrieval applies document access rules and excludes historical versions
-  before sending chunk text to Ollama; answers include source filenames and page
-  numbers when available.
+- `POST /chat/ask` accepts `{"message": "..."}` and requires `chat:use`.
+  The stateless LangGraph workflow routes each question to document RAG,
+  registered structured-data tools, both, or a safe insufficient-information
+  response. Document retrieval applies document access rules and excludes
+  historical versions before sending chunks to Ollama; answers include source
+  filenames and page numbers when available.
 - `POST /rag/query` accepts `{"question": "...", "top_k": 5}` and requires
   `documents:read`. It filters to authorized, ready current-version chunks
   before searching FAISS, sends only those retrieved chunks to Ollama, and
@@ -151,6 +153,79 @@ The existing employee, project, and task APIs are read-only. Their corresponding
 write operations, audit coverage for future mutations, and broader
 resource-specific business policies should be added before those capabilities
 are introduced.
+
+## Structured-data tools
+
+- `POST /tools/execute` accepts `{"tool_name": "...", "arguments": {...}}` and
+  returns the tool name with its validated structured result.
+- The endpoint requires JWT authentication. It injects the authenticated
+  employee and database session into the tool registry; neither identity nor
+  session information is accepted from request arguments.
+- Only registered tools can run. Tool arguments are validated against each
+  registered Pydantic schema, including rejection of extra fields. Existing
+  tool-level employee, project, task, and performance authorization remains
+  enforced inside each handler.
+- Successful and denied executions are audited with the actor, tool name,
+  outcome, and a relevant resource ID when present. Tool execution is not
+  exposed as an independent LLM function-calling endpoint; chat orchestrates
+  tools through the same validated registry.
+
+## LangGraph chat orchestration
+
+`POST /chat/ask` remains the chat endpoint and remains stateless. It requires a
+valid JWT and the new `chat:use` permission. Example:
+
+```json
+{"message": "What does our travel policy say, and what are my overdue tasks?"}
+```
+
+The graph has six bounded responsibilities:
+
+1. A structured-output planner chooses document RAG, registered structured
+   tools, both, or unsupported. It is shown only the registry's tool names,
+   descriptions, and argument schemas.
+2. A deterministic authorization node checks `documents:read` before any
+   planned RAG work. Structured tools continue to enforce their own existing
+   granular permissions in their handlers.
+3. The RAG node calls the existing `answer_rag_query` service with the
+   authenticated employee, preserving document-level access filtering.
+4. The tool node executes at most three planned calls through the existing
+   validated registry and authorization handlers.
+5. The aggregation node validates outputs and bounds evidence supplied to the
+   answer model; unrequested email fields are removed from its prompt context.
+6. The final node returns the RAG answer directly for document-only requests,
+   or generates a concise answer from authorized structured evidence for mixed
+   and structured requests.
+
+The additive seed grants `chat:use` to the four existing application roles:
+admin, HR, manager, and employee. Those roles already represent the intended
+Company AI user categories; unseeded/custom roles do not receive chat access
+unless explicitly granted. `chat:use` allows assistant use only; it does not
+grant document or structured-data permissions.
+
+Execution-path permissions are independent: RAG requires `documents:read`,
+while each structured-data tool keeps its existing permission checks. Mixed
+requests use strict all-or-nothing behavior: document permission is checked
+before tool execution; if any selected tool is denied, the RAG branch is not
+run; if retrieval fails, structured results are suppressed. Any denial returns
+a generic access-denied response with no partial result or document citations,
+and is audited. Unsupported requests do not access either data source and need
+no source-specific permission.
+
+The authenticated employee and SQLAlchemy session come from FastAPI
+dependencies and are passed to graph nodes by trusted backend code. Neither is
+put in model prompts, accepted from the chat request, or available as model
+arguments. No SQL or conversation history is sent to or persisted by the graph.
+Planner and answer generation use the configured `LLM_MODEL` and the existing
+`RAG_GENERATION_TIMEOUT_SECONDS`; no separate model configuration is needed.
+Malformed model output, unavailable Ollama, unauthorized data paths, and failed
+tool execution fail closed with bounded safe answers.
+
+Chat API behavior is still a single `message` request with a `ChatResponse`,
+but answers can now include authorized structured data as well as document
+citations. The graph does not persist conversations, stream output, or allow
+the model to invoke unregistered tools. The `chat:use` permission is required for every chat request; data-source
+permissions are required only when the corresponding graph path is selected.
 
 ## Tests
 

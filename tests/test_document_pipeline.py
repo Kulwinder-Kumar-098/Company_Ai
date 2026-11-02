@@ -949,13 +949,16 @@ def test_retrieval_excludes_chunks_from_historical_versions(
     }
 
 
-def test_chat_endpoint_requires_documents_read(pipeline_db, monkeypatch):
+def test_chat_endpoint_requires_chat_use_not_documents_read(
+    pipeline_db,
+    monkeypatch,
+):
     db, _, _ = pipeline_db
-    read_permission = Permission(code="documents:read", description="Read")
+    chat_permission = Permission(code="chat:use", description="Use chat")
     employee = _employee(db, "CHATTER")
     db.commit()
     monkeypatch.setattr(
-        "app.api.chat_routes.answer_document_question",
+        "app.api.chat_routes.run_agent_query",
         lambda *_: {"answer": "Answer", "sources": []},
     )
 
@@ -980,14 +983,23 @@ def test_chat_endpoint_requires_documents_read(pipeline_db, monkeypatch):
             headers=headers,
             json={"message": "Question"},
         )
-        employee.role.permissions.append(read_permission)
+        employee.role.permissions.append(chat_permission)
         db.commit()
         response = client.post(
             "/chat/ask",
             headers=headers,
             json={"message": "Question"},
         )
+        spoofed = client.post(
+            "/chat/ask",
+            headers=headers,
+            json={"message": "Question", "employee_id": "OTHER"},
+        )
 
     assert denied_response.status_code == 403
     assert response.status_code == 200
     assert response.json()["answer"] == "Answer"
+    assert spoofed.status_code == 422
+    assert "documents:read" not in {
+        permission.code for permission in employee.role.permissions
+    }

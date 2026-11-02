@@ -203,6 +203,7 @@ def test_rag_query_sends_only_authorized_current_ready_chunks(
     )
     assert payload["sources"][0]["source_id"] == "S1"
     assert payload["sources"][0]["chunk_id"] == public_chunk.id
+    assert payload["sources"][0]["chunk_index"] == public_chunk.chunk_index
     events = db.scalars(
         select(AuditEvent).where(AuditEvent.resource_type == "rag_query")
     ).all()

@@ -53,6 +53,7 @@ def build_rag_context(
             "version_number": int(chunk["version_number"]),
             "page_number": chunk["page_number"],
             "chunk_id": chunk_id,
+            "chunk_index": int(chunk.get("chunk_index", chunk_id)),
             "content": content,
         }
         tentative_context = [*context_sources, item]
@@ -90,6 +91,7 @@ def build_rag_context(
                 "version_number": int(chunk["version_number"]),
                 "page_number": chunk["page_number"],
                 "chunk_id": chunk_id,
+                "chunk_index": int(chunk.get("chunk_index", chunk_id)),
                 "relevance_score": float(chunk["score"]),
                 "excerpt": str(item["content"])[:500],
             }
