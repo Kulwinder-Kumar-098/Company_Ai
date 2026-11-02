@@ -81,8 +81,11 @@ def fixture_predictor(
 
 def live_predictor(
     case: EvaluationCase,
+    provider: str | None = None,
 ) -> PlannerEvaluationResult:
-    return evaluate_planner_query(case.query)
+    if provider is None:
+        return evaluate_planner_query(case.query)
+    return evaluate_planner_query(case.query, provider=provider)
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -178,6 +181,7 @@ def evaluate_dataset(
     ],
     *,
     evaluation_mode: str,
+    provider: str | None = None,
 ) -> dict[str, object]:
     categories: dict[str, list[EvaluationCase]] = defaultdict(list)
     for case in dataset.cases:
@@ -222,10 +226,17 @@ def evaluate_dataset(
     return {
         "dataset_version": dataset.version,
         "evaluation_mode": evaluation_mode,
-        "planner_model": (
-            settings.llm_model if evaluation_mode == "live_ollama" else None
+        "planner_provider": (
+            provider or settings.planner_provider
+            if evaluation_mode.startswith("live_")
+            else None
         ),
-        "model_quality_evaluated": evaluation_mode == "live_ollama",
+        "planner_model": (
+            settings.effective_planner_model
+            if evaluation_mode.startswith("live_")
+            else None
+        ),
+        "model_quality_evaluated": evaluation_mode.startswith("live_"),
         "metrics": _measure_group(dataset.cases, predictions),
         "categories": {
             category: _measure_group(cases, predictions)
@@ -281,6 +292,7 @@ def render_report(report: dict[str, object]) -> str:
         f"- Dataset version: {report['dataset_version']}",
         f"- Evaluation mode: {report['evaluation_mode']}",
         f"- Model quality evaluated: {report['model_quality_evaluated']}",
+        f"- Planner provider: {report.get('planner_provider') or 'N/A'}",
         f"- Planner model: {report.get('planner_model') or 'N/A'}",
         "",
         "| " + " | ".join(columns) + " |",
@@ -359,21 +371,34 @@ def main() -> None:
         default="fixture",
         help=(
             "fixture validates fixed synthetic planner outputs; live calls "
-            "the configured Ollama planner"
+            "the selected planner provider"
         ),
+    )
+    parser.add_argument(
+        "--provider",
+        choices=("ollama", "groq"),
+        default=settings.planner_provider,
+        help="planner provider for live mode; fixture mode never makes calls",
     )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
     dataset = load_dataset(args.dataset)
-    predictor = fixture_predictor if args.mode == "fixture" else live_predictor
-    mode_name = "deterministic_fixture" if args.mode == "fixture" else "live_ollama"
+    if args.mode == "fixture":
+        predictor = fixture_predictor
+        mode_name = "deterministic_fixture"
+        provider = None
+    else:
+        provider = args.provider
+        predictor = lambda case: live_predictor(case, provider=provider)
+        mode_name = f"live_{provider}"
     report = render_report(
         evaluate_dataset(
             dataset,
             predictor,
             evaluation_mode=mode_name,
+            provider=provider,
         )
     )
     if args.output:

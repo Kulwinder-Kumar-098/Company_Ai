@@ -14,6 +14,7 @@ faiss-cpu
 numpy
 ollama
 langgraph>=0.2,<1.0
+groq>=1.7.0
 pyjwt
 pwdlib[argon2]
 python-multipart

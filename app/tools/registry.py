@@ -101,16 +101,17 @@ TOOLS: dict[str, ToolDefinition] = {
         ),
         ToolDefinition(
             "get_employee_performance_metrics",
-            "Read one employee's metrics under explicit performance scope. "
-            "Omit employee_id to select the authenticated actor.",
+            "Read personal performance metrics for an employee. "
+            "Use this tool when a user asks for their own performance metrics or reviews, "
+            "or another specific employee's metrics. Omit employee_id to select the authenticated user.",
             PerformanceMetricsInput,
             ToolResult[list[PerformanceMetricData]],
             get_employee_performance_metrics,
         ),
         ToolDefinition(
             "get_performance_metrics",
-            "Read performance metrics filtered to the actor's explicit self, "
-            "department, or all-data permission.",
+            "Query or list performance metrics across broader criteria (such as filtered by department or multiple employees). "
+            "For an individual's or one's own performance metrics, prefer get_employee_performance_metrics instead.",
             PerformanceMetricsInput,
             ToolResult[list[PerformanceMetricData]],
             get_performance_metrics,

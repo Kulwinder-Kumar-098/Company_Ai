@@ -3,7 +3,7 @@
 
 from typing import Literal
 from pathlib import Path
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     document_chunk_size: int = Field(default=1000, gt=0, le=10000)
     document_chunk_overlap: int = Field(default=150, ge=0, le=9999)
     llm_model: str = "llama3.2:3b"
+    planner_provider: Literal["ollama", "groq"] = "ollama"
+    planner_model: str | None = None
+    groq_api_key: SecretStr | None = None
     document_worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
     document_job_lease_seconds: int = Field(default=3600, gt=0)
     document_job_max_attempts: int = Field(default=5, gt=0, le=20)
@@ -82,6 +85,10 @@ class Settings(BaseSettings):
                 )
 
         return self
+
+    @property
+    def effective_planner_model(self) -> str:
+        return self.planner_model or self.llm_model
 
     model_config = SettingsConfigDict(
         env_file=".env",

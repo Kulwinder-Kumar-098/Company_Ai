@@ -1,6 +1,7 @@
 """Bounded in-process aggregation for redacted agent telemetry."""
 
 from collections import Counter, OrderedDict, defaultdict, deque
+import re
 from threading import Lock
 from typing import Any
 
@@ -30,6 +31,13 @@ VALID_ERRORS = {
     "model_unavailable",
     "node_failure",
     "permission_denied",
+    "provider_authentication",
+    "provider_bad_request",
+    "provider_error",
+    "provider_misconfigured",
+    "provider_rate_limit",
+    "provider_timeout",
+    "provider_unavailable",
     "planning_unavailable",
     "rag_generation_failure",
     "retrieval_unavailable",
@@ -57,6 +65,8 @@ VALID_OUTCOMES = {
     "selected",
     "success",
 }
+VALID_PROVIDERS = {"groq", "ollama"}
+SAFE_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$")
 VALID_TOOLS = {
     "get_department_performance_summary",
     "get_employee_details",
@@ -109,6 +119,8 @@ class AgentTelemetryAggregator:
         self._counters: Counter[str] = Counter()
         self._by_mode: Counter[str] = Counter()
         self._errors: Counter[str] = Counter()
+        self._model_providers: Counter[str] = Counter()
+        self._models: Counter[str] = Counter()
         self._latencies: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=MAX_LATENCY_SAMPLES)
         )
@@ -151,6 +163,12 @@ class AgentTelemetryAggregator:
             safe["error_category"] = (
                 error if error in VALID_ERRORS else "other"
             )
+        provider = event.get("provider")
+        if isinstance(provider, str) and provider in VALID_PROVIDERS:
+            safe["provider"] = provider
+        model = event.get("model")
+        if isinstance(model, str) and SAFE_MODEL_PATTERN.fullmatch(model):
+            safe["model"] = model
         duration = event.get("duration_ms")
         if (
             isinstance(duration, (int, float))
@@ -197,13 +215,19 @@ class AgentTelemetryAggregator:
                 else "structured_tool_failures"
             ] += 1
         elif event_name == "model_call":
-            self._counters["ollama_calls"] += 1
+            provider = event.get("provider", "ollama")
+            self._model_providers[provider] += 1
+            model = event.get("model")
+            if model:
+                self._models[model] += 1
+            prefix = "groq" if provider == "groq" else "ollama"
+            self._counters[f"{prefix}_calls"] += 1
             if outcome == "success":
-                self._counters["ollama_successes"] += 1
+                self._counters[f"{prefix}_successes"] += 1
             else:
-                self._counters["ollama_failures"] += 1
-                if error == "model_timeout":
-                    self._counters["ollama_timeouts"] += 1
+                self._counters[f"{prefix}_failures"] += 1
+                if error in {"model_timeout", "provider_timeout"}:
+                    self._counters[f"{prefix}_timeouts"] += 1
 
     def _record_latency(self, event: dict[str, Any]) -> None:
         duration = event.get("duration_ms")
@@ -225,6 +249,10 @@ class AgentTelemetryAggregator:
         self._traces.move_to_end(trace_id)
         if "mode" in event:
             trace["mode"] = event["mode"]
+        if "provider" in event:
+            trace["provider"] = event["provider"]
+        if "model" in event:
+            trace["model"] = event["model"]
         if (
             event["event"] == "tool_selection"
             and event.get("tool_name")
@@ -319,6 +347,23 @@ class AgentTelemetryAggregator:
                         else None
                     ),
                 },
+                "groq": {
+                    "total": self._counters["groq_calls"],
+                    "success": self._counters["groq_successes"],
+                    "failure": self._counters["groq_failures"],
+                    "timeout": self._counters["groq_timeouts"],
+                    "success_rate": (
+                        round(
+                            self._counters["groq_successes"]
+                            / self._counters["groq_calls"],
+                            4,
+                        )
+                        if self._counters["groq_calls"]
+                        else None
+                    ),
+                },
+                "model_providers": dict(self._model_providers),
+                "models": dict(self._models),
                 "error_categories": dict(self._errors),
                 "latencies": {
                     key: _latency_summary(values)
@@ -335,6 +380,8 @@ class AgentTelemetryAggregator:
             self._counters.clear()
             self._by_mode.clear()
             self._errors.clear()
+            self._model_providers.clear()
+            self._models.clear()
             self._latencies.clear()
             self._traces.clear()
 

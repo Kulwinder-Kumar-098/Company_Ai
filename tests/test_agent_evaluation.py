@@ -335,6 +335,8 @@ def test_graph_telemetry_has_trace_node_timing_and_no_confidential_text(
                 "node",
                 "tool_name",
                 "error_category",
+                "provider",
+                "model",
             }
         )
         for entry in entries

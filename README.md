@@ -216,10 +216,13 @@ The authenticated employee and SQLAlchemy session come from FastAPI
 dependencies and are passed to graph nodes by trusted backend code. Neither is
 put in model prompts, accepted from the chat request, or available as model
 arguments. No SQL or conversation history is sent to or persisted by the graph.
-Planner and answer generation use the configured `LLM_MODEL` and the existing
-`RAG_GENERATION_TIMEOUT_SECONDS`; no separate model configuration is needed.
-Malformed model output, unavailable Ollama, unauthorized data paths, and failed
-tool execution fail closed with bounded safe answers.
+The planner provider is selected by `PLANNER_PROVIDER` (`ollama` by default or
+`groq`); `PLANNER_MODEL` selects its model and falls back to `LLM_MODEL` when
+unset. Ollama remains in use for embeddings, RAG, and final answer generation.
+Groq planning uses strict JSON Schema output followed by the same Pydantic and
+registered-tool validation. Provider failures, malformed model output,
+unauthorized data paths, and failed tool execution fail closed with bounded
+safe answers.
 
 Chat API behavior is still a single `message` request with a `ChatResponse`,
 but answers can now include authorized structured data as well as document
@@ -248,19 +251,32 @@ Run the deterministic evaluator:
 
 Fixture mode checks the dataset and evaluator deterministically. Its scores
 measure the evaluator against the supplied synthetic fixed planner outputs;
-they are **not** model-quality results. To evaluate the configured Ollama
-planner against synthetic query text, run:
+they are **not** model-quality results. To evaluate the configured planner
+against synthetic query text, run:
 
 ```bash
-./.venv/bin/python -m app.evaluation.runner --mode live
+./.venv/bin/python -m app.evaluation.runner --mode live --provider ollama
 ```
 
-Live mode requires the configured Ollama service and `LLM_MODEL`. It makes
-planner calls only; it does not execute selected tools, retrieve documents, or
-evaluate authorization against a production database. Use `--dataset PATH` to
-select a compatible versioned dataset and `--output PATH` to save the Markdown
-report. Reports include category and overall routing accuracy, exact tool-name
-selection accuracy, invalid-plan and invalid-argument rates, planner-call
+For Groq planning, configure `PLANNER_PROVIDER=groq`,
+`PLANNER_MODEL=openai/gpt-oss-20b`, and `GROQ_API_KEY`, then run:
+
+```bash
+./.venv/bin/python -m app.evaluation.runner --mode live --provider groq
+```
+
+Live mode makes planner calls only; it does not execute selected tools,
+retrieve actual documents, or evaluate authorization against a production
+database. The planner receives only the synthetic question and the registered
+tool catalog. Groq receives no employee identity, records, retrieved content,
+tool results, answer content, database credentials, or JWTs. Protect
+`GROQ_API_KEY` as a secret: keep it in an ignored local `.env` or a deployment
+secret manager, never commit it, and do not include it in support logs.
+`PLANNER_PROVIDER=ollama` keeps planning local. Use `--dataset PATH` to select
+a compatible versioned dataset and `--output PATH` to save the Markdown report.
+Reports include the selected provider/model, category and overall routing
+accuracy, exact tool-name selection accuracy, invalid-plan and
+invalid-argument rates, planner-call
 failure rate, unsupported classification accuracy, unnecessary tool-selection
 rate, citation-route coverage, and a per-case table of expected and actual
 planner decisions. Citation-route coverage measures selection of RAG for cases
@@ -285,8 +301,9 @@ company data.
 Graph telemetry is emitted as structured `agent_telemetry` log records and
 aggregated in a bounded in-process store. Events include a server-generated
 trace ID (also returned in the chat response), execution mode, graph node and
-duration, selected registered tool name, model call outcome, RAG outcome, tool
-outcome, final response outcome, and a safe error category. The internal
+duration, selected registered tool name, planner provider/model and model call
+outcome, RAG outcome, tool outcome, final response outcome, and a safe error
+category. The internal
 `GET /internal/agent-metrics` endpoint exposes aggregate counters, mode
 distribution, error categories, latency summaries, and up to 500 recent
 trace-level outcomes with registered tool selections and tool outcomes. Access

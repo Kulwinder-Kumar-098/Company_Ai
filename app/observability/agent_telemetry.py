@@ -19,6 +19,8 @@ def emit_agent_event(
     node: str | None = None,
     tool_name: str | None = None,
     error_category: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Emit only allowlisted, non-content telemetry fields."""
     payload: dict[str, Any] = {
@@ -36,6 +38,10 @@ def emit_agent_event(
         payload["tool_name"] = tool_name
     if error_category is not None:
         payload["error_category"] = error_category
+    if provider is not None:
+        payload["provider"] = provider
+    if model is not None:
+        payload["model"] = model
     safe_payload = agent_telemetry_aggregator.sanitize_event(payload)
     try:
         agent_telemetry_aggregator.record(safe_payload)

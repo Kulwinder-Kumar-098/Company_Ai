@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from contextvars import ContextVar
 from typing import cast
 from uuid import uuid4
 
@@ -14,6 +15,10 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.agents.prompts import ANSWER_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
+from app.agents.planner_provider import (
+    PlannerProviderError,
+    request_planner_json,
+)
 from app.agents.workflows import (
     MAX_FINAL_ANSWER_CHARACTERS,
     MAX_TOOL_CALLS,
@@ -55,6 +60,10 @@ ACCESS_DENIED_ANSWER = (
 _ollama_client = ollama.Client(
     timeout=settings.rag_generation_timeout_seconds,
 )
+_planner_provider_override: ContextVar[str | None] = ContextVar(
+    "planner_provider_override",
+    default=None,
+)
 
 
 class ModelResponseError(RuntimeError):
@@ -93,8 +102,27 @@ def _request_model_json(
     user_prompt: str,
     output_schema: type[RequestPlan] | type[GeneratedAnswer],
 ) -> str:
+    if output_schema is RequestPlan:
+        provider = _planner_provider_override.get() or settings.planner_provider
+        api_key = (
+            settings.groq_api_key.get_secret_value()
+            if settings.groq_api_key is not None
+            else None
+        )
+        return request_planner_json(
+            provider=provider,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=settings.effective_planner_model,
+            api_key=api_key,
+            timeout=settings.rag_generation_timeout_seconds,
+            output_schema=output_schema,
+            ollama_client=_ollama_client,
+        )
+    else:
+        model = settings.llm_model
     response = _ollama_client.chat(
-        model=settings.llm_model,
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -111,12 +139,27 @@ def _validated_model_output(
     user_prompt: str,
     output_schema: type[RequestPlan] | type[GeneratedAnswer],
     trace_id: str | None = None,
+    provider: str | None = None,
 ) -> RequestPlan | GeneratedAnswer:
     retry_prompt = user_prompt
     last_error_category = "model_unavailable"
     for attempt in range(MAX_MODEL_ATTEMPTS):
         started = time.perf_counter()
         try:
+            if provider is not None:
+                selected_provider = provider
+            elif output_schema is RequestPlan:
+                selected_provider = (
+                    _planner_provider_override.get()
+                    or settings.planner_provider
+                )
+            else:
+                selected_provider = "ollama"
+            selected_model = (
+                settings.effective_planner_model
+                if output_schema is RequestPlan
+                else settings.llm_model
+            )
             raw = _request_model_json(
                 system_prompt=system_prompt,
                 user_prompt=retry_prompt,
@@ -130,10 +173,13 @@ def _validated_model_output(
                     outcome="success",
                     duration_ms=(time.perf_counter() - started) * 1000,
                     error_category=None if attempt == 0 else "retry_succeeded",
+                    provider=selected_provider,
+                    model=selected_model,
                 )
             return output
         except (
             ModelResponseError,
+            PlannerProviderError,
             ValidationError,
             httpx.HTTPError,
             TimeoutError,
@@ -142,6 +188,8 @@ def _validated_model_output(
         ) as exc:
             if isinstance(exc, ModelResponseError):
                 category = exc.error_category
+            elif isinstance(exc, PlannerProviderError):
+                category = exc.category
             elif isinstance(exc, ValidationError):
                 category = _validation_error_category(exc)
             elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
@@ -155,8 +203,17 @@ def _validated_model_output(
                     outcome="failure",
                     duration_ms=(time.perf_counter() - started) * 1000,
                     error_category=category,
+                    provider=selected_provider,
+                    model=selected_model,
                 )
-            if attempt + 1 == MAX_MODEL_ATTEMPTS:
+            if (
+                attempt + 1 == MAX_MODEL_ATTEMPTS
+                or category in {
+                    "provider_authentication",
+                    "provider_misconfigured",
+                    "provider_bad_request",
+                }
+            ):
                 raise ModelResponseError(category) from exc
             last_error_category = category
             retry_prompt = (
@@ -195,6 +252,7 @@ def evaluate_planner_query(
     query: str,
     *,
     trace_id: str | None = None,
+    provider: str | None = None,
 ) -> PlannerEvaluationResult:
     """Run and validate one planner result without executing data paths."""
     prompt = json.dumps(
@@ -206,12 +264,14 @@ def evaluate_planner_query(
         ensure_ascii=False,
     )
     parsed: RequestPlan | GeneratedAnswer | None = None
+    provider_token = _planner_provider_override.set(provider)
     try:
         parsed = _validated_model_output(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             user_prompt=prompt,
             output_schema=RequestPlan,
             trace_id=trace_id,
+            provider=provider,
         )
         plan = cast(RequestPlan, parsed)
         selected_tool_names = tuple(
@@ -235,6 +295,8 @@ def evaluate_planner_query(
         return PlannerEvaluationResult(None, "invalid_plan", names)
     except ModelResponseError as exc:
         return PlannerEvaluationResult(None, exc.error_category, ())
+    finally:
+        _planner_provider_override.reset(provider_token)
     return PlannerEvaluationResult(plan, None, selected_tool_names)
 
 def _plan_node(state: AgentState) -> dict[str, object]:

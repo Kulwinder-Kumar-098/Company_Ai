@@ -9,6 +9,7 @@ dependencies = [
     "email-validator>=2.3.0",
     "faiss-cpu>=1.15.1",
     "fastapi>=0.115,<1.0",
+    "groq>=1.7.0",
     "httpx>=0.28.1",
     "langgraph>=0.2,<1.0",
     "numpy>=2.2.6",
