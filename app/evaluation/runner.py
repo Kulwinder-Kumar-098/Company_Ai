@@ -83,6 +83,9 @@ def live_predictor(
     case: EvaluationCase,
     provider: str | None = None,
 ) -> PlannerEvaluationResult:
+    import time
+    if provider == "groq":
+        time.sleep(2.0)
     if provider is None:
         return evaluate_planner_query(case.query)
     return evaluate_planner_query(case.query, provider=provider)
