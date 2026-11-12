@@ -16,12 +16,16 @@ Rules:
   matching tool.
 - Company documents (RAG) contain official written guidelines, policies, handbooks,
   and FAQs (e.g. travel, leave, benefits, expense policies). Real-time physical
-  facility or operational logs (such as door access badge history, live camera feeds,
-  or physical security logs) are NOT in company documents; route them to
-  unsupported if no registered tool covers them.
+  facility logs, operational records, and transactional payroll schedules (such as door
+  access badge history, live camera feeds, visitor counts, or payroll payment schedules)
+  are NOT in company policy documents; route them to unsupported if no registered tool
+  covers them.
 - For individual employee performance metrics (self or specified employee), use
   get_employee_performance_metrics. For department-wide performance summaries,
   use get_department_performance_summary.
+- When a user asks about projects they are allocated to, working on, or assigned to,
+  select get_employee_tasks (which returns the user's assigned tasks along with their
+  associated project IDs) and get_employee_details.
 - Choose unsupported if required tool arguments cannot be inferred from the
   question or the requested capability is not in the supplied tool catalog.
 - Never invent tool names or arguments and never choose more than three tools.
@@ -43,6 +47,9 @@ Examples:
 - "Can you look into that issue?" -> unsupported because the issue is unclear.
 - "Show the office door access badge history." -> unsupported because physical
   badge logs are not in company documents and have no tool.
+- "Retrieve the payroll payment schedule for a person." -> unsupported because
+  payroll payment schedules and transactional pay data are not in company policy documents
+  and have no registered tool.
 - "Tell me the office's current visitor count." -> unsupported if no registered
   tool or document source provides live visitor counts."""
 

@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.permissions import require_permission
+from app.core.permissions import require_any_permission, require_permission
 from app.models.employee import Employee
 from app.observability.audit import record_audit_event
 from app.schemas.rag import RAGQueryRequest, RAGQueryResponse
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 def query_documents(
     request: RAGQueryRequest,
     current_user: Employee = Depends(
-        require_permission("documents:read")
+        require_any_permission("documents:read", "policy:read")
     ),
     db: Session = Depends(get_db),
 ) -> RAGQueryResponse:

@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     planner_provider: Literal["ollama", "groq"] = "ollama"
     planner_model: str | None = None
     groq_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    gemini_planner_model: str = "gemini-3.8-flash"
     document_worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
     document_job_lease_seconds: int = Field(default=3600, gt=0)
     document_job_max_attempts: int = Field(default=5, gt=0, le=20)

@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
+import httpx
 from groq import (
     APIError,
     APIConnectionError,
@@ -14,6 +15,9 @@ from groq import (
     Groq,
     RateLimitError,
 )
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from pydantic import BaseModel
 
 from app.tools.registry import TOOLS
@@ -22,9 +26,56 @@ from app.tools.registry import TOOLS
 class PlannerProviderError(RuntimeError):
     """A provider failure with a safe, stable telemetry category."""
 
-    def __init__(self, category: str) -> None:
+    def __init__(
+        self,
+        category: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
         super().__init__(category)
         self.category = category
+        self.provider = provider
+        self.model = model
+
+
+def _gemini_response_schema(schema: dict[str, Any]) -> genai_types.Schema:
+    """Convert Pydantic JSON Schema to the Gemini Developer API subset."""
+    definitions = schema.get("$defs", {})
+
+    def convert(value: dict[str, Any]) -> dict[str, Any]:
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            name = reference.rsplit("/", 1)[-1]
+            definition = definitions.get(name)
+            if not isinstance(definition, dict):
+                raise PlannerProviderError(
+                    "provider_bad_request",
+                    provider="gemini",
+                )
+            return convert(definition)
+
+        result: dict[str, Any] = {}
+        schema_type = value.get("type")
+        if isinstance(schema_type, str):
+            result["type"] = schema_type.upper()
+        if isinstance(value.get("enum"), list):
+            result["enum"] = value["enum"]
+        if isinstance(value.get("required"), list):
+            result["required"] = value["required"]
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            result["properties"] = {
+                name: convert(child)
+                for name, child in properties.items()
+                if isinstance(name, str) and isinstance(child, dict)
+            }
+        items = value.get("items")
+        if isinstance(items, dict):
+            result["items"] = convert(items)
+        return result
+
+    return genai_types.Schema.model_validate(convert(schema))
 
 
 def _strict_value_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -137,7 +188,11 @@ def request_groq_json(
     timeout: float,
 ) -> str:
     if not api_key or not api_key.strip():
-        raise PlannerProviderError("provider_misconfigured")
+        raise PlannerProviderError(
+            "provider_misconfigured",
+            provider="gemini",
+            model=model,
+        )
     try:
         client = Groq(
             api_key=api_key,
@@ -187,6 +242,79 @@ def request_groq_json(
     return content.strip()
 
 
+def request_gemini_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    api_key: str | None,
+    timeout: float,
+    output_schema: type[BaseModel],
+) -> str:
+    if not api_key or not api_key.strip():
+        raise PlannerProviderError("provider_misconfigured")
+    try:
+        client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=int(timeout * 1000)),
+        )
+        response = client.models.generate_content(
+            model=model,
+            contents=user_prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                response_schema=_gemini_response_schema(
+                    output_schema.model_json_schema()
+                ),
+                temperature=0,
+            ),
+        )
+        content = response.text
+    except genai_errors.APIError as exc:
+        if exc.code == 429:
+            category = "provider_rate_limit"
+        elif exc.code in {401, 403}:
+            category = "provider_authentication"
+        elif exc.code == 400:
+            category = "provider_bad_request"
+        elif exc.code in {500, 502, 503, 504}:
+            category = "provider_unavailable"
+        else:
+            category = "provider_error"
+        raise PlannerProviderError(
+            category,
+            provider="gemini",
+            model=model,
+        ) from exc
+    except (httpx.TimeoutException, TimeoutError) as exc:
+        raise PlannerProviderError(
+            "provider_timeout",
+            provider="gemini",
+            model=model,
+        ) from exc
+    except (httpx.TransportError, ConnectionError) as exc:
+        raise PlannerProviderError(
+            "provider_unavailable",
+            provider="gemini",
+            model=model,
+        ) from exc
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise PlannerProviderError(
+            "invalid_model_output",
+            provider="gemini",
+            model=model,
+        ) from exc
+
+    if not isinstance(content, str) or not content.strip():
+        raise PlannerProviderError(
+            "invalid_model_output",
+            provider="gemini",
+            model=model,
+        )
+    return content.strip()
+
+
 def request_planner_json(
     *,
     provider: str,
@@ -197,23 +325,62 @@ def request_planner_json(
     timeout: float,
     output_schema: type[BaseModel],
     ollama_client: Any,
-) -> str:
+    fallback_api_key: str | None = None,
+    fallback_model: str | None = None,
+    include_provider: bool = False,
+) -> str | tuple[str, str, str]:
     """Request a planner response through the configured provider adapter."""
+    selected_provider = provider
+    selected_model = model
     if provider == "groq":
-        raw = request_groq_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            api_key=api_key,
-            timeout=timeout,
-        )
+        try:
+            raw = request_groq_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                api_key=api_key,
+                timeout=timeout,
+            )
+        except PlannerProviderError as exc:
+            if (
+                not fallback_api_key
+                or not fallback_api_key.strip()
+                or exc.category not in {
+                    "provider_rate_limit",
+                    "provider_timeout",
+                    "provider_unavailable",
+                    "provider_error",
+                }
+            ):
+                raise
+            selected_provider = "gemini"
+            selected_model = fallback_model or "gemini-2.5-flash"
+            raw = request_gemini_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=selected_model,
+                api_key=fallback_api_key,
+                timeout=timeout,
+                output_schema=output_schema,
+            )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise PlannerProviderError("invalid_model_json") from exc
+            raise PlannerProviderError(
+                "invalid_model_json",
+                provider=selected_provider,
+                model=selected_model,
+            ) from exc
         if not isinstance(payload, dict):
-            raise PlannerProviderError("invalid_model_output")
-        return json.dumps(normalize_groq_plan_arguments(payload))
+            raise PlannerProviderError(
+                "invalid_model_output",
+                provider=selected_provider,
+                model=selected_model,
+            )
+        result = json.dumps(normalize_groq_plan_arguments(payload))
+        if include_provider:
+            return result, selected_provider, selected_model
+        return result
     if provider != "ollama":
         raise PlannerProviderError("provider_misconfigured")
 

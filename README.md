@@ -21,6 +21,13 @@ uvicorn app.main:app --reload
 Open http://127.0.0.1:8000/docs to use Swagger. Sign in through
 `POST /auth/login` and authorize Swagger with the returned bearer token.
 
+For Groq planner requests, configure `PLANNER_PROVIDER=groq`,
+`GROQ_API_KEY`, and `PLANNER_MODEL`. If Groq is rate-limited, times out, or is
+temporarily unavailable, the planner automatically retries the request through
+Gemini when `GEMINI_API_KEY` is configured. `GEMINI_PLANNER_MODEL` defaults to
+`gemini-3.8-flash`. Gemini is used only as a planner fallback; answer generation
+continues to use the configured Ollama model.
+
 The seed script is additive and idempotent: it inserts missing permissions and
 role mappings without deleting existing mappings. It can be safely rerun with
 `python -m app.seed`.

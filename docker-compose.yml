@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: enterprise_ai_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-company_ai}
+      POSTGRES_USER: ${POSTGRES_USER:-company_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Kulwinder098}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-company_app} -d ${POSTGRES_DB:-company_ai}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enterprise_ai_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enterprise_ai_frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      - COMPANY_AI_API_URL=http://api:8000
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enterprise_ai_worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "app.workers.document_worker"]
+
+volumes:
+  postgres_data:
+

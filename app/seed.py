@@ -94,6 +94,7 @@ def seed_data():
                 "documents:read",
                 "documents:version",
                 "employees:read",
+                "employees:read:self",
                 "projects:read:assigned",
                 "tasks:read:assigned",
                 "projects:read",

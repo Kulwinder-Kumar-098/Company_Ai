@@ -101,12 +101,17 @@ def _request_model_json(
     system_prompt: str,
     user_prompt: str,
     output_schema: type[RequestPlan] | type[GeneratedAnswer],
-) -> str:
+) -> str | tuple[str, str, str]:
     if output_schema is RequestPlan:
         provider = _planner_provider_override.get() or settings.planner_provider
         api_key = (
             settings.groq_api_key.get_secret_value()
             if settings.groq_api_key is not None
+            else None
+        )
+        fallback_api_key = (
+            settings.gemini_api_key.get_secret_value()
+            if settings.gemini_api_key is not None
             else None
         )
         return request_planner_json(
@@ -118,6 +123,9 @@ def _request_model_json(
             timeout=settings.rag_generation_timeout_seconds,
             output_schema=output_schema,
             ollama_client=_ollama_client,
+            fallback_api_key=fallback_api_key,
+            fallback_model=settings.gemini_planner_model,
+            include_provider=True,
         )
     else:
         model = settings.llm_model
@@ -160,11 +168,15 @@ def _validated_model_output(
                 if output_schema is RequestPlan
                 else settings.llm_model
             )
-            raw = _request_model_json(
+            response = _request_model_json(
                 system_prompt=system_prompt,
                 user_prompt=retry_prompt,
                 output_schema=output_schema,
             )
+            if isinstance(response, tuple):
+                raw, selected_provider, selected_model = response
+            else:
+                raw = response
             output = output_schema.model_validate_json(raw)
             if trace_id:
                 emit_agent_event(
@@ -190,6 +202,8 @@ def _validated_model_output(
                 category = exc.error_category
             elif isinstance(exc, PlannerProviderError):
                 category = exc.category
+                selected_provider = exc.provider or selected_provider
+                selected_model = exc.model or selected_model
             elif isinstance(exc, ValidationError):
                 category = _validation_error_category(exc)
             elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
@@ -341,7 +355,10 @@ def _authorize_plan_node(state: AgentState) -> dict[str, object]:
     plan = state["plan"]
     if plan is None or plan.mode not in {"rag", "mixed"}:
         return {"safe_error": state["safe_error"]}
-    if has_permission(state["db"], state["actor"], "documents:read"):
+    if (
+        has_permission(state["db"], state["actor"], "documents:read")
+        or has_permission(state["db"], state["actor"], "policy:read")
+    ):
         emit_agent_event(
             trace_id=state["trace_id"],
             event="permission_check",

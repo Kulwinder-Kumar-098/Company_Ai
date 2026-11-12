@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import run_agent_query
 from app.core.database import get_db
-from app.core.permissions import require_permission
+from app.core.permissions import require_any_permission, require_permission
 from app.models.employee import Employee
 from app.schemas.chat import ChatRequest, ChatResponse
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def ask_question(
     request: ChatRequest,
     current_user: Employee = Depends(
-        require_permission("chat:use")
+        require_any_permission("chat:use", "employees:read:self", "documents:read", "policy:read")
     ),
     db: Session = Depends(get_db),
 ) -> ChatResponse:

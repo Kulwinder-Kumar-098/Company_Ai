@@ -132,6 +132,183 @@ def test_provider_interface_dispatches_groq_structured_plan(monkeypatch):
     }
 
 
+def test_groq_rate_limit_falls_back_to_gemini_with_provider_metadata(
+    monkeypatch,
+):
+    calls = []
+
+    def groq_rate_limit(**_kwargs):
+        raise planner_provider.PlannerProviderError("provider_rate_limit")
+
+    def gemini_response(**kwargs):
+        calls.append(kwargs)
+        return '{"mode":"unsupported","tool_calls":[]}'
+
+    monkeypatch.setattr(planner_provider, "request_groq_json", groq_rate_limit)
+    monkeypatch.setattr(planner_provider, "request_gemini_json", gemini_response)
+    result = planner_provider.request_planner_json(
+        provider="groq",
+        system_prompt="synthetic system",
+        user_prompt="synthetic user",
+        model="openai/gpt-oss-20b",
+        api_key="groq-test-key",
+        timeout=1,
+        output_schema=RequestPlan,
+        ollama_client=object(),
+        fallback_api_key="gemini-test-key",
+        fallback_model="gemini-test-model",
+        include_provider=True,
+    )
+
+    assert isinstance(result, tuple)
+    assert json.loads(result[0]) == {
+        "mode": "unsupported",
+        "tool_calls": [],
+    }
+    assert result[1:] == ("gemini", "gemini-test-model")
+    assert calls[0]["api_key"] == "gemini-test-key"
+    assert calls[0]["model"] == "gemini-test-model"
+
+
+def test_gemini_request_uses_json_schema_and_returns_text(monkeypatch):
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(
+                text='{"mode":"unsupported","tool_calls":[]}'
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.models = FakeModels()
+
+    monkeypatch.setattr(planner_provider.genai, "Client", FakeClient)
+    result = planner_provider.request_gemini_json(
+        system_prompt="synthetic system",
+        user_prompt="synthetic user",
+        model="gemini-test-model",
+        api_key="gemini-test-key",
+        timeout=9,
+        output_schema=RequestPlan,
+    )
+
+    request = captured["request"]
+    assert result == '{"mode":"unsupported","tool_calls":[]}'
+    assert captured["client"]["api_key"] == "gemini-test-key"
+    assert captured["client"]["http_options"].timeout == 9000
+    assert request["model"] == "gemini-test-model"
+    assert request["contents"] == "synthetic user"
+    assert request["config"].system_instruction == "synthetic system"
+    assert request["config"].response_mime_type == "application/json"
+    schema = request["config"].response_schema
+    assert schema.type == planner_provider.genai_types.Type.OBJECT
+    assert schema.properties["tool_calls"].items.properties[
+        "arguments"
+    ].type == planner_provider.genai_types.Type.OBJECT
+
+
+def test_gemini_service_unavailable_is_mapped_safely(monkeypatch):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.models = SimpleNamespace(
+                generate_content=lambda **_params: (_ for _ in ()).throw(
+                    planner_provider.genai_errors.ServerError(
+                        503,
+                        {"error": {"message": "synthetic outage"}},
+                    )
+                )
+            )
+
+    monkeypatch.setattr(planner_provider.genai, "Client", FakeClient)
+    with pytest.raises(planner_provider.PlannerProviderError) as error:
+        planner_provider.request_gemini_json(
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="gemini-test-model",
+            api_key="gemini-test-key",
+            timeout=1,
+            output_schema=RequestPlan,
+        )
+
+    assert error.value.category == "provider_unavailable"
+    assert error.value.provider == "gemini"
+    assert error.value.model == "gemini-test-model"
+    assert "synthetic outage" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "provider_authentication",
+        "provider_misconfigured",
+        "provider_bad_request",
+    ],
+)
+def test_groq_configuration_errors_do_not_fall_back_to_gemini(
+    monkeypatch,
+    category,
+):
+    def groq_error(**_kwargs):
+        raise planner_provider.PlannerProviderError(category)
+
+    monkeypatch.setattr(planner_provider, "request_groq_json", groq_error)
+    monkeypatch.setattr(
+        planner_provider,
+        "request_gemini_json",
+        lambda **_kwargs: pytest.fail("Gemini must not mask configuration errors"),
+    )
+
+    with pytest.raises(planner_provider.PlannerProviderError) as error:
+        planner_provider.request_planner_json(
+            provider="groq",
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="groq-model",
+            api_key="groq-test-key",
+            timeout=1,
+            output_schema=RequestPlan,
+            ollama_client=object(),
+            fallback_api_key="gemini-test-key",
+        )
+
+    assert error.value.category == category
+
+
+def test_orchestrator_passes_gemini_fallback_configuration(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(settings, "planner_provider", "groq")
+    monkeypatch.setattr(settings, "groq_api_key", SecretStr("groq-test-key"))
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("gemini-test-key"),
+    )
+    monkeypatch.setattr(settings, "gemini_planner_model", "gemini-test-model")
+
+    def fake_request(**kwargs):
+        captured.update(kwargs)
+        return '{"mode":"unsupported","tool_calls":[]}', "gemini", "gemini-test-model"
+
+    monkeypatch.setattr(orchestrator, "request_planner_json", fake_request)
+    result = orchestrator._request_model_json(
+        system_prompt=PLANNER_SYSTEM_PROMPT,
+        user_prompt='{"question":"synthetic"}',
+        output_schema=RequestPlan,
+    )
+
+    assert result == (
+        '{"mode":"unsupported","tool_calls":[]}',
+        "gemini",
+        "gemini-test-model",
+    )
+    assert captured["fallback_api_key"] == "gemini-test-key"
+    assert captured["fallback_model"] == "gemini-test-model"
+    assert captured["include_provider"] is True
+
+
 def test_provider_interface_dispatches_ollama_planner():
     calls = []
 
@@ -415,6 +592,7 @@ def test_planner_model_falls_back_to_answer_model():
 
     assert configured.effective_planner_model == "local-answer-model"
     assert configured.planner_provider == "ollama"
+    assert configured.gemini_planner_model == "gemini-3.8-flash"
 
 
 def test_provider_specific_evaluation_and_fixture_are_offline(monkeypatch):

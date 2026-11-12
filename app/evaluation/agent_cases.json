@@ -65,7 +65,7 @@
     {
       "case_id": "project-details-002",
       "category": "project_structured",
-      "query": "Give me details for the project I manage.",
+      "query": "Give me details for project P-SYNTH-01 that I manage.",
       "expected_mode": "structured",
       "expected_tool_names": ["get_project_details"],
       "expected_rag": false,
@@ -113,7 +113,7 @@
     {
       "case_id": "performance-department-002",
       "category": "performance_structured",
-      "query": "Summarize performance for my department.",
+      "query": "Summarize performance for the engineering department.",
       "expected_mode": "structured",
       "expected_tool_names": ["get_department_performance_summary"],
       "expected_rag": false,
@@ -137,7 +137,7 @@
     {
       "case_id": "mixed-project-policy-002",
       "category": "mixed",
-      "query": "Find the project status and the policy for project expense approvals.",
+      "query": "Find the status for project P-SYNTH-01 and the policy for project expense approvals.",
       "expected_mode": "mixed",
       "expected_tool_names": ["get_project_status"],
       "expected_rag": true,
@@ -233,7 +233,7 @@
     {
       "case_id": "auth-project-other-002",
       "category": "authorization_sensitive",
-      "query": "Show details for a project I am not assigned to.",
+      "query": "Show details for project P-SYNTH-99 which I am not assigned to.",
       "expected_mode": "structured",
       "expected_tool_names": ["get_project_details"],
       "expected_rag": false,

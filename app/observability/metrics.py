@@ -65,7 +65,7 @@ VALID_OUTCOMES = {
     "selected",
     "success",
 }
-VALID_PROVIDERS = {"groq", "ollama"}
+VALID_PROVIDERS = {"gemini", "groq", "ollama"}
 SAFE_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$")
 VALID_TOOLS = {
     "get_department_performance_summary",
@@ -220,7 +220,7 @@ class AgentTelemetryAggregator:
             model = event.get("model")
             if model:
                 self._models[model] += 1
-            prefix = "groq" if provider == "groq" else "ollama"
+            prefix = provider
             self._counters[f"{prefix}_calls"] += 1
             if outcome == "success":
                 self._counters[f"{prefix}_successes"] += 1
@@ -359,6 +359,21 @@ class AgentTelemetryAggregator:
                             4,
                         )
                         if self._counters["groq_calls"]
+                        else None
+                    ),
+                },
+                "gemini": {
+                    "total": self._counters["gemini_calls"],
+                    "success": self._counters["gemini_successes"],
+                    "failure": self._counters["gemini_failures"],
+                    "timeout": self._counters["gemini_timeouts"],
+                    "success_rate": (
+                        round(
+                            self._counters["gemini_successes"]
+                            / self._counters["gemini_calls"],
+                            4,
+                        )
+                        if self._counters["gemini_calls"]
                         else None
                     ),
                 },
