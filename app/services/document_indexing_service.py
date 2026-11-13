@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
-from app.services.document_faiss_service import DocumentFaissIndex
 from app.services.embedding_service import embed_texts
+from app.services.document_vector_store import get_document_vector_store
 
 
 def generate_missing_chunk_embeddings(db: Session) -> None:
@@ -109,16 +109,18 @@ def _load_compatible_vectors(
     return chunk_ids, vectors
 
 
-def rebuild_document_faiss_index(
+def rebuild_document_vector_index(
     db: Session,
     *,
     include_document_id: int | None = None,
 ) -> None:
-    def load_vectors() -> tuple[list[int], list[list[float]]]:
-        return _load_compatible_vectors(db, include_document_id)
-
-    DocumentFaissIndex().rebuild_from_loader(
-        load_vectors,
+    chunk_ids, vectors = _load_compatible_vectors(
+        db,
+        include_document_id,
+    )
+    get_document_vector_store().rebuild(
+        chunk_ids,
+        vectors,
         model_name=settings.embedding_model,
     )
 
@@ -168,9 +170,9 @@ def index_document_chunks(
             )
         vectors.append(embedding)
 
-    index = DocumentFaissIndex()
-    if not index.index_path.exists() or not index.metadata_path.exists():
-        rebuild_document_faiss_index(
+    index = get_document_vector_store()
+    if not index.is_available():
+        rebuild_document_vector_index(
             db,
             include_document_id=document_id,
         )

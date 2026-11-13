@@ -141,6 +141,14 @@ def test_production_accepts_strong_length_secret():
         database_url="sqlite://",
         app_env="production",
         jwt_secret_key="a" * 32,
+        document_storage_backend="s3",
+        s3_endpoint_url="https://account.r2.cloudflarestorage.com",
+        s3_bucket_name="company-documents",
+        s3_access_key_id="test-access-key",
+        s3_secret_access_key="test-secret-key",
+        vector_store_backend="qdrant",
+        qdrant_url="https://cluster.example",
+        qdrant_api_key="test-qdrant-key",
     )
 
     assert config.app_env == "production"

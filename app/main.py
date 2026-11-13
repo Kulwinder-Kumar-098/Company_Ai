@@ -5,10 +5,21 @@ import logging
 from threading import Event, Thread
 
 from fastapi import FastAPI
+from fastapi import HTTPException
+import httpx
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.database import engine
+from app.core.config import settings
+from app.services.document_storage_service import (
+    DocumentStorageUnavailableError,
+    get_document_storage,
+)
+from app.services.document_vector_store import (
+    VectorStoreUnavailableError,
+    get_document_vector_store,
+)
 from app.workers.document_worker import run_worker
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.auth_routes import router as auth_router
@@ -75,9 +86,68 @@ def database_health():
         return {"database": "connected"}
     except SQLAlchemyError:
         # Do not expose database credentials or internal errors.
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=503,
             detail="Database unavailable",
         )
+
+
+@app.get("/health/ready")
+def readiness():
+    dependencies: dict[str, str] = {}
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        dependencies["database"] = "ok"
+    except SQLAlchemyError:
+        logger.warning("Readiness check failed for the database.")
+        dependencies["database"] = "unavailable"
+
+    try:
+        get_document_storage().check_connection()
+        dependencies["document_storage"] = "ok"
+    except (DocumentStorageUnavailableError, OSError, ValueError):
+        logger.warning("Readiness check failed for document storage.")
+        dependencies["document_storage"] = "unavailable"
+
+    try:
+        get_document_vector_store().check_connection()
+        dependencies["vector_store"] = "ok"
+    except (VectorStoreUnavailableError, OSError, RuntimeError, ValueError):
+        logger.warning("Readiness check failed for the vector store.")
+        dependencies["vector_store"] = "unavailable"
+
+    try:
+        response = httpx.get(
+            f"{settings.ollama_host}/api/tags",
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        available_models = {
+            model.get("name")
+            for model in response.json().get("models", [])
+            if isinstance(model, dict)
+        }
+        required_models = {
+            settings.embedding_model,
+            settings.llm_model,
+        }
+        dependencies["embedding_service"] = (
+            "ok"
+            if required_models.issubset(available_models)
+            else "unavailable"
+        )
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+        logger.warning("Readiness check failed for the embedding service.")
+        dependencies["embedding_service"] = "unavailable"
+
+    if "unavailable" in dependencies.values():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "dependencies": dependencies,
+            },
+        )
+    return {"status": "ready", "dependencies": dependencies}

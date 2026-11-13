@@ -108,6 +108,10 @@ class DocumentFaissIndex:
             index.remove_ids(
                 np.asarray(sorted(set(chunk_ids)), dtype=np.int64)
             )
+            if index.ntotal == 0:
+                self.index_path.unlink(missing_ok=True)
+                self.metadata_path.unlink(missing_ok=True)
+                return
             self._persist_locked(
                 index,
                 model_name,

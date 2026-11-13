@@ -29,9 +29,20 @@ class Settings(BaseSettings):
         le=1440,
     )
     document_storage_dir: Path = Path("data/documents")
+    document_storage_backend: Literal["local", "s3"] = "local"
+    s3_endpoint_url: str | None = None
+    s3_bucket_name: str | None = None
+    s3_access_key_id: SecretStr | None = None
+    s3_secret_access_key: SecretStr | None = None
+    s3_region: str = "auto"
+    vector_store_backend: Literal["faiss", "qdrant"] = "faiss"
     document_faiss_index_path: Path = Path(
         "data/indexes/documents.faiss"
     )
+    qdrant_url: str | None = None
+    qdrant_api_key: SecretStr | None = None
+    qdrant_collection: str = "company-ai-document-chunks"
+    qdrant_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     ollama_host: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text:latest"
     embedding_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
@@ -170,6 +181,23 @@ class Settings(BaseSettings):
             )
         )
 
+    @field_validator("s3_endpoint_url", "qdrant_url")
+    @classmethod
+    def validate_service_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return value
+        parsed = urlsplit(value.strip())
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise ValueError("Service URLs must be valid HTTP(S) URLs.")
+        return value.strip().rstrip("/")
+
     @model_validator(mode="after")
     def validate_security_configuration(self):
         if self.document_chunk_overlap >= self.document_chunk_size:
@@ -184,6 +212,48 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production requires JWT_SECRET_KEY "
                     "with at least 32 characters"
+                )
+            if self.document_storage_backend != "s3":
+                raise ValueError(
+                    "Production requires DOCUMENT_STORAGE_BACKEND=s3."
+                )
+            missing_object_storage = [
+                name
+                for name, value in (
+                    ("S3_ENDPOINT_URL", self.s3_endpoint_url),
+                    ("S3_BUCKET_NAME", self.s3_bucket_name),
+                    ("S3_ACCESS_KEY_ID", self.s3_access_key_id),
+                    ("S3_SECRET_ACCESS_KEY", self.s3_secret_access_key),
+                )
+                if value is None
+                or (
+                    isinstance(value, str)
+                    and not value.strip()
+                )
+                or (
+                    isinstance(value, SecretStr)
+                    and not value.get_secret_value().strip()
+                )
+            ]
+            if missing_object_storage:
+                raise ValueError(
+                    "Production object storage is not configured: "
+                    + ", ".join(missing_object_storage)
+                )
+            if self.vector_store_backend != "qdrant":
+                raise ValueError(
+                    "Production requires VECTOR_STORE_BACKEND=qdrant."
+                )
+            if not self.qdrant_url or not self.qdrant_url.strip():
+                raise ValueError(
+                    "Production requires QDRANT_URL."
+                )
+            if (
+                self.qdrant_api_key is None
+                or not self.qdrant_api_key.get_secret_value().strip()
+            ):
+                raise ValueError(
+                    "Production requires QDRANT_API_KEY."
                 )
 
         return self

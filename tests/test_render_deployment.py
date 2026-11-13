@@ -1,10 +1,16 @@
 from pathlib import Path
+from contextlib import nullcontext
 from threading import Event
+from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import settings
 from app.main import app
+from app.services.document_vector_store import VectorStoreUnavailableError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +47,86 @@ def test_health_endpoint_does_not_require_database_or_llm(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_readiness_endpoint_checks_configured_dependencies(monkeypatch):
+    class Connection:
+        def execute(self, _statement):
+            return None
+
+    monkeypatch.setattr(
+        "app.main.engine.connect",
+        lambda: nullcontext(Connection()),
+    )
+    monkeypatch.setattr(
+        "app.main.get_document_storage",
+        lambda: SimpleNamespace(check_connection=lambda: None),
+    )
+    monkeypatch.setattr(
+        "app.main.get_document_vector_store",
+        lambda: SimpleNamespace(check_connection=lambda: None),
+    )
+    monkeypatch.setattr(
+        "app.main.httpx.get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "models": [
+                    {"name": settings.embedding_model},
+                    {"name": settings.llm_model},
+                ]
+            },
+        ),
+    )
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "dependencies": {
+            "database": "ok",
+            "document_storage": "ok",
+            "vector_store": "ok",
+            "embedding_service": "ok",
+        },
+    }
+
+
+def test_readiness_endpoint_hides_dependency_error_details(monkeypatch):
+    monkeypatch.setattr(
+        "app.main.engine.connect",
+        lambda: (_ for _ in ()).throw(SQLAlchemyError("database secret")),
+    )
+    monkeypatch.setattr(
+        "app.main.get_document_storage",
+        lambda: SimpleNamespace(check_connection=lambda: None),
+    )
+    monkeypatch.setattr(
+        "app.main.get_document_vector_store",
+        lambda: SimpleNamespace(
+            check_connection=lambda: (_ for _ in ()).throw(
+                VectorStoreUnavailableError("private Qdrant URL")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.main.httpx.get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            httpx.ConnectError("private Ollama URL")
+        ),
+    )
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert "private" not in response.text
+    assert response.json()["detail"]["dependencies"] == {
+        "database": "unavailable",
+        "document_storage": "ok",
+        "vector_store": "unavailable",
+        "embedding_service": "unavailable",
+    }
 
 
 def test_document_worker_starts_and_stops_with_application(monkeypatch):

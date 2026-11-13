@@ -1,8 +1,7 @@
 
 import logging
-import os
 import uuid
-from pathlib import Path
+from urllib.parse import quote
 from typing import Literal
 
 from fastapi import (
@@ -15,7 +14,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -35,13 +34,14 @@ from app.schemas.document import (
 )
 from app.services.authorization_service import has_permission
 from app.services.document_access_service import can_access_document
-from app.services.document_indexing_service import rebuild_document_faiss_index
 from app.services.document_job_queue import (
     JobAlreadyRunningError,
     enqueue_document_processing,
 )
 from app.services.document_storage_service import (
+    DocumentStorageUnavailableError,
     DocumentValidationError,
+    get_document_storage,
     save_uploaded_document,
 )
 
@@ -51,6 +51,20 @@ router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
 )
+
+
+def _delete_uploaded_file(storage_key: str) -> None:
+    try:
+        get_document_storage().delete_file(storage_key)
+    except DocumentStorageUnavailableError as exc:
+        logger.exception(
+            "Failed to clean up uploaded document object %s.",
+            storage_key,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document storage cleanup failed.",
+        ) from exc
 
 
 @router.post(
@@ -93,8 +107,13 @@ def upload_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except DocumentStorageUnavailableError as exc:
+        logger.exception("Document upload storage is unavailable.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document storage is unavailable.",
+        ) from exc
 
-    storage_path: Path = saved_file["storage_path"]
     try:
         duplicate_id = db.scalar(
             select(Document.id)
@@ -103,13 +122,13 @@ def upload_document(
         )
     except SQLAlchemyError as exc:
         db.rollback()
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to check document duplicates.",
         ) from exc
     if duplicate_id is not None:
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This document has already been uploaded.",
@@ -161,7 +180,7 @@ def upload_document(
         db.rollback()
 
         # Do not leave an orphaned file if the database fails.
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
 
         if db.scalar(
             select(Document.id)
@@ -179,7 +198,7 @@ def upload_document(
         ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save document metadata.",
@@ -249,8 +268,13 @@ def upload_document_version(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except DocumentStorageUnavailableError as exc:
+        logger.exception("Document version storage is unavailable.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document storage is unavailable.",
+        ) from exc
 
-    storage_path: Path = saved_file["storage_path"]
     try:
         duplicate_id = db.scalar(
             select(Document.id)
@@ -259,13 +283,13 @@ def upload_document_version(
         )
     except SQLAlchemyError as exc:
         db.rollback()
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to check document version duplicates.",
         ) from exc
     if duplicate_id is not None:
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This document has already been uploaded.",
@@ -308,7 +332,7 @@ def upload_document_version(
         db.refresh(new_document)
     except IntegrityError as exc:
         db.rollback()
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
 
         duplicate_exists = db.scalar(
             select(Document.id)
@@ -326,7 +350,7 @@ def upload_document_version(
         ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
-        storage_path.unlink(missing_ok=True)
+        _delete_uploaded_file(saved_file["storage_key"])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save document version.",
@@ -480,31 +504,36 @@ def download_document(
             detail="Document not found",
         )
 
-    storage_root = Path(
-        settings.document_storage_dir
-    ).resolve()
-
-    file_path = (
-        storage_root / document.storage_key
-    ).resolve()
-
-    # Ensure the resolved file stays inside the storage directory.
-    if file_path.parent != storage_root:
+    try:
+        source = get_document_storage().open_file(document.storage_key)
+    except FileNotFoundError as exc:
         raise HTTPException(
             status_code=404,
             detail="Document file not found",
-        )
-
-    if not file_path.is_file():
+        ) from exc
+    except DocumentStorageUnavailableError as exc:
+        logger.exception("Document storage is unavailable for download.")
         raise HTTPException(
-            status_code=404,
-            detail="Document file not found",
-        )
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document storage is unavailable.",
+        ) from exc
 
-    return FileResponse(
-        path=file_path,
+    def stream_document():
+        try:
+            while chunk := source.read(64 * 1024):
+                yield chunk
+        finally:
+            source.close()
+
+    return StreamingResponse(
+        stream_document(),
         media_type=document.mime_type,
-        filename=document.original_filename,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''"
+                f"{quote(document.original_filename)}"
+            )
+        },
     )
 
 
@@ -599,23 +628,24 @@ def delete_document(
                 ),
             )
 
-    storage_root = Path(settings.document_storage_dir).resolve()
-    file_path = (storage_root / document.storage_key).resolve()
-    if file_path.parent != storage_root:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    tombstone_path = file_path.with_name(
-        f".{file_path.name}.{uuid.uuid4().hex}.deleting"
-    )
+    storage = get_document_storage()
+    storage_key = document.storage_key
+    tombstone_key = f".deleting/{uuid.uuid4().hex}/{storage_key}"
     try:
-        if file_path.exists():
-            os.replace(file_path, tombstone_path)
-    except OSError as exc:
+        moved_file = storage.move_file(storage_key, tombstone_key)
+    except (DocumentStorageUnavailableError, OSError) as exc:
+        logger.exception("Failed to prepare document %s for deletion.", document_id)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to prepare document file for deletion.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document storage is unavailable.",
         ) from exc
 
+    chunk_ids = db.scalars(
+        select(DocumentChunk.id).where(
+            DocumentChunk.document_id == document.id
+        )
+    ).all()
+    cleanup_failed = False
     db.delete(document)
     db.add(
         AuditEvent(
@@ -631,12 +661,12 @@ def delete_document(
         db.commit()
     except SQLAlchemyError as exc:
         db.rollback()
-        if tombstone_path.exists():
+        if moved_file:
             try:
-                os.replace(tombstone_path, file_path)
-            except OSError:
+                storage.move_file(tombstone_key, storage_key)
+            except (DocumentStorageUnavailableError, OSError):
                 logger.exception(
-                    "Failed to restore document file %s after database deletion failed.",
+                    "Failed to restore document object %s after database deletion failed.",
                     document_id,
                 )
         raise HTTPException(
@@ -644,20 +674,35 @@ def delete_document(
             detail="Failed to delete document metadata.",
         ) from exc
 
-    if tombstone_path.exists():
+    if moved_file:
         try:
-            tombstone_path.unlink()
-        except OSError:
+            storage.delete_file(tombstone_key)
+        except DocumentStorageUnavailableError:
+            cleanup_failed = True
             logger.exception(
-                "Document %s was removed from the database, but its file "
-                "could not be deleted.",
+                "Document %s was removed from the database, but its "
+                "temporary storage object could not be deleted.",
                 document_id,
             )
 
     try:
-        rebuild_document_faiss_index(db)
-    except Exception:
+        from app.services.document_vector_store import get_document_vector_store
+
+        get_document_vector_store().remove(
+            chunk_ids,
+            model_name=settings.embedding_model,
+        )
+    except (OSError, ValueError, RuntimeError):
+        cleanup_failed = True
         logger.exception(
-            "Document %s was deleted, but the FAISS index rebuild failed.",
+            "Document %s was deleted, but its vector cleanup failed.",
             document_id,
+        )
+    if cleanup_failed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Document metadata was deleted, but storage or vector "
+                "cleanup is incomplete. Contact an administrator."
+            ),
         )

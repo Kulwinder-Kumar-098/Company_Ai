@@ -8,6 +8,13 @@ import os
 import requests
 import streamlit as st
 
+from app.clients.document_api_client import (
+    DocumentAPIError,
+    get_document_status,
+    list_documents,
+    upload_document,
+)
+
 # Configuration
 API_BASE_URL = os.getenv("COMPANY_AI_API_URL", "https://company-ai-hha5.onrender.com")
 
@@ -83,6 +90,136 @@ def logout():
     st.rerun()
 
 
+def handle_document_api_error(error: DocumentAPIError) -> None:
+    if error.status_code == 401:
+        st.session_state.token = None
+        st.session_state.user_info = None
+        st.session_state.messages = []
+        st.error("Your session has expired. Please sign in again.")
+        st.rerun()
+    if error.status_code == 403:
+        st.error(
+            "Your account is not authorized to upload this document or use "
+            "the selected sharing scope."
+        )
+        return
+    st.error(f"Document API error: {error}")
+
+
+@st.fragment(run_every="5s")
+def render_document_library():
+    token = st.session_state.token
+    if not token:
+        return
+
+    try:
+        documents = list_documents(API_BASE_URL, token, limit=20)
+    except DocumentAPIError as error:
+        handle_document_api_error(error)
+        return
+
+    if not documents:
+        st.info("No documents are available to your account yet.")
+        return
+
+    for document in documents:
+        document_id = document.get("id")
+        filename = document.get("original_filename", "Document")
+        document_status = document.get("processing_status", "unknown")
+        status_details = None
+        if document_status in {"uploaded", "processing", "failed"}:
+            try:
+                status_details = get_document_status(
+                    API_BASE_URL,
+                    token,
+                    document_id,
+                )
+                document_status = status_details.get(
+                    "processing_status",
+                    document_status,
+                )
+            except DocumentAPIError as error:
+                if error.status_code == 401:
+                    handle_document_api_error(error)
+                    return
+
+        with st.container(border=True):
+            st.markdown(f"**{filename}**")
+            st.caption(
+                f"Status: {document_status.replace('_', ' ').title()} · "
+                f"Version {document.get('version_number', 1)}"
+            )
+            if status_details:
+                if document_status == "ready":
+                    st.caption(
+                        f"{status_details.get('chunk_count', 0)} chunks indexed"
+                    )
+                elif document_status == "failed":
+                    st.warning(
+                        status_details.get("error")
+                        or "Document processing failed."
+                    )
+
+
+def render_document_upload():
+    st.subheader("Upload a document")
+    st.caption(
+        "Uploads are processed automatically. Private access is selected by "
+        "default; document permissions are enforced by the API."
+    )
+
+    st.session_state.setdefault("document_upload_generation", 0)
+    upload_key = (
+        f"document_upload_{st.session_state.document_upload_generation}"
+    )
+    with st.form("document_upload_form", clear_on_submit=False):
+        uploaded_file = st.file_uploader(
+            "Choose a PDF, DOCX, or TXT file",
+            type=["pdf", "docx", "txt"],
+            key=upload_key,
+        )
+        access_scope = st.selectbox(
+            "Who can access this document?",
+            ["private", "department", "company"],
+            format_func=lambda value: value.title(),
+            help=(
+                "Company-wide sharing requires the documents:publish "
+                "permission."
+            ),
+        )
+        submitted = st.form_submit_button(
+            "Upload and process",
+            type="primary",
+        )
+
+    if not submitted:
+        return
+    if uploaded_file is None:
+        st.warning("Choose a document before uploading.")
+        return
+
+    try:
+        document = upload_document(
+            API_BASE_URL,
+            st.session_state.token,
+            filename=uploaded_file.name,
+            content=uploaded_file.getvalue(),
+            mime_type=uploaded_file.type or "application/octet-stream",
+            access_scope=access_scope,
+        )
+    except DocumentAPIError as error:
+        handle_document_api_error(error)
+        return
+
+    st.session_state.document_upload_generation += 1
+    st.session_state.last_uploaded_document_id = document.get("id")
+    st.success(
+        f"{document.get('original_filename', uploaded_file.name)} was uploaded. "
+        "Processing status will update below."
+    )
+    st.rerun()
+
+
 # Sidebar: Authentication & Navigation
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/company.png", width=100)
@@ -112,9 +249,9 @@ with st.sidebar:
         st.divider()
         st.caption("Backend Status")
         try:
-            health = requests.get(f"{API_BASE_URL}/docs", timeout=3)
+            health = requests.get(f"{API_BASE_URL}/health", timeout=3)
             if health.status_code == 200:
-                st.markdown("🟢 **API Online** (`localhost:8000`)")
+                st.markdown("🟢 **API online**")
         except Exception:
             st.markdown("🔴 **API Disconnected**")
 
@@ -140,6 +277,13 @@ if not st.session_state.token:
         st.markdown("**🔒 Permission Enforcement**")
         st.caption("Role-based access control automatically protects confidential employee and project data.")
 else:
+    st.header("Documents")
+    with st.container(border=True):
+        render_document_upload()
+    render_document_library()
+
+    st.divider()
+    st.header("Chat")
     # Display Chat History
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

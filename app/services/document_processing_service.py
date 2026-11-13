@@ -1,6 +1,7 @@
 """Background processing for uploaded documents."""
 
 import logging
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,8 +23,13 @@ from app.services.document_indexing_service import (
     generate_missing_chunk_embeddings,
     index_document_chunks,
 )
-from app.services.document_faiss_service import DocumentFaissIndex
 from app.services.embedding_service import EmbeddingServiceError
+from app.services.document_storage_service import (
+    DocumentStorageUnavailableError,
+    get_document_storage,
+)
+from app.services.document_vector_store import get_document_vector_store
+from app.services.document_vector_store import VectorStoreUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +103,21 @@ def _process_document(
             )
         db.commit()
 
-        storage_root = Path(settings.document_storage_dir).resolve()
-        file_path = (storage_root / document.storage_key).resolve()
-        if file_path.parent != storage_root:
-            raise ValueError("Document storage key is outside the storage directory.")
-
-        pages = extract_document_pages(
-            file_path,
-            document.file_extension,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix="company-ai-process-"
+        ) as working_directory:
+            file_path = (
+                Path(working_directory)
+                / Path(document.original_filename).name
+            )
+            get_document_storage().download_file(
+                document.storage_key,
+                file_path,
+            )
+            pages = extract_document_pages(
+                file_path,
+                document.file_extension,
+            )
         chunks = chunk_pages(
             pages,
             chunk_size=settings.document_chunk_size,
@@ -249,14 +261,14 @@ def _activate_document_version(
     db.commit()
     if superseded_chunk_ids:
         try:
-            DocumentFaissIndex().remove(
+            get_document_vector_store().remove(
                 superseded_chunk_ids,
                 model_name=settings.embedding_model,
             )
         except Exception:
             logger.exception(
                 "Activated document version %s, but failed to remove "
-                "superseded vectors from FAISS.",
+                "superseded vectors from the vector store.",
                 document.id,
             )
 
@@ -264,6 +276,10 @@ def _activate_document_version(
 def _safe_error_code(error: Exception) -> str:
     if isinstance(error, EmbeddingServiceError):
         return "embedding_service_unavailable"
+    if isinstance(error, DocumentStorageUnavailableError):
+        return "document_storage_unavailable"
+    if isinstance(error, VectorStoreUnavailableError):
+        return "vector_store_unavailable"
     if isinstance(error, FileNotFoundError):
         return "source_file_missing"
     if isinstance(error, ValueError):

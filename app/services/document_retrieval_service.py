@@ -8,8 +8,11 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.employee import Employee
 from app.services.document_access_service import accessible_document_conditions
-from app.services.document_faiss_service import DocumentFaissIndex
 from app.services.embedding_service import embed_texts
+from app.services.document_vector_store import (
+    VectorStoreUnavailableError,
+    get_document_vector_store,
+)
 
 
 class VectorIndexUnavailableError(RuntimeError):
@@ -44,18 +47,29 @@ def retrieve_document_chunks(
     if not authorized_chunk_ids:
         return []
 
-    index = DocumentFaissIndex()
-    if not index.index_path.is_file() or not index.metadata_path.is_file():
+    index = get_document_vector_store()
+    try:
+        index_available = index.is_available()
+    except VectorStoreUnavailableError as exc:
+        raise VectorIndexUnavailableError(
+            "The authorized document index is not available."
+        ) from exc
+    if not index_available:
         raise VectorIndexUnavailableError(
             "The authorized document index is not available."
         )
 
     query_embedding = embed_texts([query])[0]
-    ranked_chunks = index.search(
-        query_embedding,
-        limit=top_k,
-        allowed_chunk_ids=authorized_chunk_ids,
-    )
+    try:
+        ranked_chunks = index.search(
+            query_embedding,
+            limit=top_k,
+            allowed_chunk_ids=authorized_chunk_ids,
+        )
+    except VectorStoreUnavailableError as exc:
+        raise VectorIndexUnavailableError(
+            "The authorized document index is not available."
+        ) from exc
     threshold = (
         settings.rag_relevance_threshold
         if relevance_threshold is None

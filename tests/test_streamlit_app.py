@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import requests
 from streamlit.testing.v1 import AppTest
 
+from app.clients import document_api_client
+
 
 def test_chat_sends_only_current_message_not_prior_answers(monkeypatch):
     captured = []
@@ -20,6 +22,11 @@ def test_chat_sends_only_current_message_not_prior_answers(monkeypatch):
         requests,
         "get",
         lambda *_args, **_kwargs: SimpleNamespace(status_code=200),
+    )
+    monkeypatch.setattr(
+        document_api_client,
+        "list_documents",
+        lambda *_args, **_kwargs: [],
     )
     app_path = Path(__file__).parents[1] / "streamlit_app.py"
     app = AppTest.from_file(str(app_path), default_timeout=10)

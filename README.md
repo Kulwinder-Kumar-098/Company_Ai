@@ -50,19 +50,23 @@ The seed script is additive and idempotent: it inserts missing permissions and
 role mappings without deleting existing mappings. It can be safely rerun with
 `python -m app.seed`.
 
-Document Q&A uses Ollama for embeddings and answer generation. Start Ollama and
-pull the configured models before uploading documents:
+Document Q&A uses the configured Ollama service for embeddings and answer
+generation. For local development, start Ollama and pull the configured models:
 
 ```bash
 ollama pull nomic-embed-text:latest
 ollama pull llama3.2:3b
 ```
 
-Uploaded PDF, DOCX, and TXT files are saved under `DOCUMENT_STORAGE_DIR`, then
-enqueued in the database-backed document-processing queue. The API starts a
-background worker automatically. The upload response may initially show
-`processing_status: "uploaded"`; poll `GET /documents/{id}/status` until it
-shows `ready` with a nonzero `chunk_count`. Apply migrations before deploying:
+Uploaded PDF, DOCX, and TXT files are validated and saved through the configured
+document-storage backend, then enqueued in the database-backed processing
+queue. The API starts a background worker automatically. The upload response
+may initially show `processing_status: "uploaded"`; poll
+`GET /documents/{id}/status` until it shows `ready`. The Streamlit UI includes
+an authenticated uploader and refreshes the visible processing status
+automatically. Upload authorization is enforced by the API (`documents:create`);
+the default seeded role policy grants uploads to Admin only. Apply migrations
+before deploying:
 
 ```bash
 alembic upgrade head
@@ -74,11 +78,39 @@ configured embedding service and model are available.
 
 Jobs are committed together with document metadata, claimed with PostgreSQL
 row-level locks, retried with exponential backoff, and recovered after a worker
-crash when its lease expires. Keep a single API instance unless document storage
-and the FAISS index are on shared, durable storage; multiple instances with
-separate local filesystems cannot process and retrieve the same uploaded
-documents reliably. Render Free filesystems are ephemeral, so uploaded files
-and the FAISS index can be lost on restart or redeploy.
+crash when its lease expires. Local files and FAISS are development defaults;
+they are not durable across Render Free restarts or shared across instances.
+Production configuration requires an S3-compatible document store and Qdrant.
+Cloudflare R2 is supported through the S3 API:
+
+```text
+APP_ENV=production
+DOCUMENT_STORAGE_BACKEND=s3
+S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+S3_BUCKET_NAME=<private-bucket>
+S3_ACCESS_KEY_ID=<R2-access-key>
+S3_SECRET_ACCESS_KEY=<R2-secret>
+S3_REGION=auto
+VECTOR_STORE_BACKEND=qdrant
+QDRANT_URL=https://<cluster>.cloud.qdrant.io
+QDRANT_API_KEY=<Qdrant-api-key>
+QDRANT_COLLECTION=company-ai-document-chunks
+```
+
+Set these as private deployment environment variables; never commit their
+values. The bucket should remain private. Qdrant stores chunk IDs, embedding
+model labels, and vectors; chunk text and SQL-based document authorization
+remain in PostgreSQL. Rebuild a Qdrant collection from compatible embeddings
+already stored in SQL with `python scripts/rebuild_document_vector_index.py`.
+Changing embedding models requires re-embedding first. The readiness endpoint
+`GET /health/ready` checks PostgreSQL, document storage, the vector store, and
+the embedding service without returning credentials or internal URLs.
+
+If a prior deployment lost its local PDF, the new storage configuration cannot
+recover those bytes. Delete the inaccessible stale document record through the
+authorized API, then upload the original file again. Existing documents with
+surviving source files can be reprocessed or re-indexed.
+
 Configure polling, lease, retry count, backoff, chunk size,
 chunk overlap, and embedding batch/timeout with
 `DOCUMENT_WORKER_POLL_SECONDS`, `DOCUMENT_JOB_LEASE_SECONDS`,
@@ -86,10 +118,10 @@ chunk overlap, and embedding batch/timeout with
 `DOCUMENT_CHUNK_SIZE`, `DOCUMENT_CHUNK_OVERLAP`, `EMBEDDING_BATCH_SIZE`, and
 `EMBEDDING_TIMEOUT_SECONDS`.
 
-Embeddings are stored with document chunks in the database and indexed at
-`DOCUMENT_FAISS_INDEX_PATH`; a JSON sidecar records the embedding model and
-dimension. FAISS updates use process/thread locks, and new chunk IDs are added
-incrementally. Model mismatches fail indexing rather than mixing incompatible
+Embeddings are stored with document chunks in the database and mirrored into
+the configured vector backend. Local FAISS persists at
+`DOCUMENT_FAISS_INDEX_PATH`; Qdrant Cloud persists vectors remotely. Both
+backends reject incompatible embedding dimensions or models rather than mixing
 vectors. The model names can be changed with `EMBEDDING_MODEL` and `LLM_MODEL`;
 changing the embedding model requires re-embedding documents before retrieval.
 Failed processing is reported through the document's `processing_status`; an
@@ -125,7 +157,8 @@ migration before relying on the new embedding metadata/index manifest.
   filenames and page numbers when available.
 - `POST /rag/query` accepts `{"question": "...", "top_k": 5}` and requires
   `documents:read`. It filters to authorized, ready current-version chunks
-  before searching FAISS, sends only those retrieved chunks to Ollama, and
+  before searching the configured vector store, sends only those retrieved
+  chunks to Ollama, and
   returns source IDs with document/version/page/chunk citations. An optional
   `conversation_id` is echoed for client correlation only: this endpoint is
   stateless and does not persist or reuse conversation history. Configure
@@ -145,6 +178,57 @@ The seed grants `documents:read` to employee, manager, HR, and admin roles;
 `documents:version` is granted to manager, HR, and admin; and
 `documents:delete` is granted only to admin. Rerun `python -m app.seed` after
 pulling these permission changes.
+
+## Streamlit document upload
+
+Set `COMPANY_AI_API_URL` in the Streamlit deployment to the FastAPI base URL.
+The uploader uses the signed-in bearer token and the same authenticated
+document endpoints as Swagger; it does not receive storage credentials.
+Private scope is the default. HR does not receive upload access in the default
+seeded policy; only a role with `documents:create` can upload.
+
+## Safe employee-data import
+
+`scripts/import_employee_data.py` copies only `employees` and
+`employee_credentials` from a PostgreSQL staging database populated from
+`company_ai_backup.sql`. Load the backup into an isolated staging database
+first; never restore the full backup into the live target. The script maps
+roles by name, skips conflicting rows, never updates target records, never
+imports role/permission or rate-limit tables, and prints counts only.
+
+Set `STAGING_DATABASE_URL` and `TARGET_DATABASE_URL` in the local process
+environment. The script refuses identical source/target databases and defaults
+to a read-only dry run:
+
+```bash
+python scripts/import_employee_data.py
+python scripts/import_employee_data.py --apply
+```
+
+Only run `--apply` after reviewing dry-run counts and obtaining explicit
+approval for the target database. No import is run by this repository change.
+
+## Production verification
+
+Set `COMPANY_AI_API_URL` and optionally `COMPANY_AI_TEST_EMAIL` and
+`COMPANY_AI_TEST_PASSWORD` in a private local environment. The verification
+script checks readiness and, when credentials are set, confirms authenticated
+document listing:
+
+```bash
+python scripts/verify_production.py
+```
+
+To run a full upload -> processing -> RAG citation check, provide a test document
+and a question answerable from it. The script deletes its temporary document
+afterward:
+
+```bash
+python scripts/verify_production.py --upload ./test-policy.pdf \
+  --question "What is the reimbursement limit?"
+```
+
+The verification script is not run against production by this change.
 
 ## Resource access
 
