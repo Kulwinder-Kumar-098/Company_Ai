@@ -2,12 +2,13 @@
 
 """RAG service: retrieve relevant chunks and generate grounded answers."""
 
-import ollama
-
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 from app.ingestion.indexing import search_faiss
 
-LLM_MODEL = "llama3.2:3b"
+_client = create_ollama_client(
+    timeout=settings.rag_generation_timeout_seconds
+)
 
 
 def answer_question(question: str, top_k: int = 3) -> dict:
@@ -43,8 +44,8 @@ def answer_question(question: str, top_k: int = 3) -> dict:
     context = "\n\n---\n\n".join(context_parts)
 
     # 3. Generate an answer using Ollama
-    response = ollama.chat(
-        model=LLM_MODEL,
+    response = _client.chat(
+        model=settings.llm_model,
         messages=[
             {
                 "role": "system",

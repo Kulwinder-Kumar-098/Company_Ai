@@ -131,7 +131,8 @@ def _fake_ollama(monkeypatch, response=None, exception=None):
     captured = {}
 
     class FakeClient:
-        def __init__(self, *, timeout):
+        def __init__(self, *, host, timeout):
+            captured["host"] = host
             captured["timeout"] = timeout
 
         def chat(self, **kwargs):
@@ -140,7 +141,10 @@ def _fake_ollama(monkeypatch, response=None, exception=None):
                 raise exception
             return response
 
-    monkeypatch.setattr(smalltalk.ollama, "Client", FakeClient)
+    monkeypatch.setattr(
+        "app.core.ollama_client.ollama.Client",
+        FakeClient,
+    )
     return captured
 
 
@@ -261,8 +265,8 @@ def test_local_llm_fallback_flags_disable_generation(
         fallback_enabled,
     )
     monkeypatch.setattr(
-        smalltalk.ollama,
-        "Client",
+        smalltalk,
+        "create_ollama_client",
         lambda **_kwargs: pytest.fail("disabled fallback called Ollama"),
     )
 
@@ -273,8 +277,8 @@ def test_local_llm_fallback_flags_disable_generation(
 
 def test_planner_failure_does_not_trigger_local_llm(monkeypatch):
     monkeypatch.setattr(
-        smalltalk.ollama,
-        "Client",
+        smalltalk,
+        "create_ollama_client",
         lambda **_kwargs: pytest.fail("planner failure called Ollama"),
     )
     result = orchestrator._final_answer_node(

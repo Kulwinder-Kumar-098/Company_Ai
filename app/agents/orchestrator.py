@@ -35,6 +35,7 @@ from app.agents.workflows import (
     RequestPlan,
 )
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 from app.models.employee import Employee
 from app.observability.agent_telemetry import emit_agent_event
 from app.observability.audit import record_audit_event
@@ -63,7 +64,7 @@ ACCESS_DENIED_ANSWER = (
     "all requested company data."
 )
 
-_ollama_client = ollama.Client(
+_ollama_client = create_ollama_client(
     timeout=settings.rag_generation_timeout_seconds,
 )
 _planner_provider_override: ContextVar[str | None] = ContextVar(

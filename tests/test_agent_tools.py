@@ -907,7 +907,8 @@ def test_successful_unsupported_plan_can_use_local_smalltalk_fallback(
     captured = {}
 
     class FakeSmalltalkClient:
-        def __init__(self, *, timeout):
+        def __init__(self, *, host, timeout):
+            captured["host"] = host
             captured["timeout"] = timeout
 
         def chat(self, **kwargs):
@@ -925,7 +926,10 @@ def test_successful_unsupported_plan_can_use_local_smalltalk_fallback(
                 }
             }
 
-    monkeypatch.setattr(smalltalk.ollama, "Client", FakeSmalltalkClient)
+    monkeypatch.setattr(
+        "app.core.ollama_client.ollama.Client",
+        FakeSmalltalkClient,
+    )
     monkeypatch.setattr(
         orchestrator,
         "answer_rag_query",

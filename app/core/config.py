@@ -3,7 +3,9 @@
 
 from typing import Literal
 from pathlib import Path
-from pydantic import Field, SecretStr, model_validator
+from urllib.parse import urlsplit, urlunsplit
+
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +32,7 @@ class Settings(BaseSettings):
     document_faiss_index_path: Path = Path(
         "data/indexes/documents.faiss"
     )
+    ollama_host: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text:latest"
     embedding_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
     embedding_batch_size: int = Field(default=64, gt=0, le=512)
@@ -101,6 +104,40 @@ class Settings(BaseSettings):
         gt=0,
         le=100,
     )
+
+    @field_validator("ollama_host")
+    @classmethod
+    def normalize_ollama_host(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("OLLAMA_HOST must be a non-empty HTTP(S) URL.")
+        if "://" not in normalized:
+            normalized = f"http://{normalized}"
+
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("OLLAMA_HOST must be a valid HTTP(S) URL.")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError(
+                "OLLAMA_HOST must be a valid HTTP(S) URL."
+            ) from exc
+
+        return urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc,
+                parsed.path.rstrip("/"),
+                "",
+                "",
+            )
+        )
 
     @model_validator(mode="after")
     def validate_security_configuration(self):

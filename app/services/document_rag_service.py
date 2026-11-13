@@ -2,14 +2,17 @@
 
 import json
 
-import ollama
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 from app.models.employee import Employee
 from app.services.document_retrieval_service import retrieve_document_chunks
 
 NO_ANSWER = "I couldn't find relevant information in the documents you can access."
+_client = create_ollama_client(
+    timeout=settings.rag_generation_timeout_seconds
+)
 
 
 def answer_document_question(
@@ -32,7 +35,7 @@ def answer_document_question(
         }
         for chunk in chunks
     ]
-    response = ollama.chat(
+    response = _client.chat(
         model=settings.llm_model,
         messages=[
             {

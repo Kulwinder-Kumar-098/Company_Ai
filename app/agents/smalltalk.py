@@ -6,10 +6,10 @@ import json
 import unicodedata
 from typing import Literal
 
-import ollama
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 
 
 class SmalltalkKind(str, Enum):
@@ -214,7 +214,9 @@ def generate_smalltalk_reply(query: str) -> str | None:
     ):
         return None
     try:
-        client = ollama.Client(timeout=settings.smalltalk_llm_timeout_seconds)
+        client = create_ollama_client(
+            timeout=settings.smalltalk_llm_timeout_seconds
+        )
         response = client.chat(
             model=settings.llm_model,
             messages=[

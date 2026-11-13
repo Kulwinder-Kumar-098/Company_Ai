@@ -6,19 +6,17 @@ from pathlib import Path
 
 import faiss
 import numpy as np
-import ollama
 
-DEFAULT_MODEL = "nomic-embed-text:latest"
+from app.core.config import settings
+from app.services import embedding_service
+
 DEFAULT_INDEX_DIR = Path("data/indexes/policies")
 
 
 def embed_texts(texts: list[str]) -> np.ndarray:
-    response = ollama.embed(
-        model=DEFAULT_MODEL,
-        input=texts,
-    )
-    embeddings = np.array(
-        response["embeddings"], dtype=np.float32
+    embeddings = np.asarray(
+        embedding_service.embed_texts(texts),
+        dtype=np.float32,
     )
     faiss.normalize_L2(embeddings)
     return embeddings
@@ -41,7 +39,7 @@ def build_faiss_index(
     faiss.write_index(index, str(index_dir / "policies.faiss"))
 
     metadata = {
-        "model_name": DEFAULT_MODEL,
+        "model_name": settings.embedding_model,
         "chunks": chunks,
     }
     (index_dir / "metadata.json").write_text(

@@ -6,13 +6,14 @@ import httpx
 import ollama
 
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 
 
 class EmbeddingServiceError(RuntimeError):
     """Raised when Ollama cannot return a usable embedding batch."""
 
 
-_client = ollama.Client(timeout=settings.embedding_timeout_seconds)
+_client = create_ollama_client(timeout=settings.embedding_timeout_seconds)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

@@ -990,6 +990,7 @@ def test_planner_model_falls_back_to_answer_model():
     assert configured.planner_cache_max_entries == 512
     assert configured.planner_rate_limit_cooldown_seconds == 30
     assert configured.chat_rag_top_k == 4
+    assert configured.ollama_host == "http://localhost:11434"
     assert configured.ollama_keep_alive == "30m"
     assert configured.ollama_num_ctx == 4096
     assert configured.rag_max_answer_tokens == 600

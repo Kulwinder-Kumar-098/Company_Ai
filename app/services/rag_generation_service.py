@@ -4,6 +4,7 @@ import httpx
 import ollama
 
 from app.core.config import settings
+from app.core.ollama_client import create_ollama_client
 from app.services.rag_context_service import RAG_SYSTEM_PROMPT
 
 
@@ -23,7 +24,7 @@ class RAGEmptyGenerationError(RAGGenerationError):
     pass
 
 
-_client = ollama.Client(timeout=settings.rag_generation_timeout_seconds)
+_client = create_ollama_client(timeout=settings.rag_generation_timeout_seconds)
 
 
 def generate_rag_answer(question: str, context: str) -> str:

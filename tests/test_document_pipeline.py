@@ -884,7 +884,7 @@ def test_retrieval_filters_inaccessible_document_text_before_rag(
         model_messages.update(kwargs)
         return {"message": {"content": "Grounded answer [company.txt]."}}
 
-    monkeypatch.setattr(document_rag_service.ollama, "chat", fake_chat)
+    monkeypatch.setattr(document_rag_service._client, "chat", fake_chat)
     answer = document_rag_service.answer_document_question(
         db,
         reader,
