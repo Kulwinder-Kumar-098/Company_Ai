@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 
 # Configuration
-API_BASE_URL = os.getenv("COMPANY_AI_API_URL", "http://127.0.0.1:8000")
+API_BASE_URL = os.getenv("COMPANY_AI_API_URL", "https://company-ai-hha5.onrender.com")
 
 st.set_page_config(
     page_title="Company AI - Enterprise Agent",
