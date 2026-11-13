@@ -3,6 +3,7 @@ uvicorn[standard]
 sqlalchemy
 psycopg[binary]
 alembic
+email-validator>=2.3.0
 pydantic-settings
 pandas
 pypdf
@@ -19,5 +20,6 @@ google-genai>=1.0.0
 streamlit>=1.30.0
 pyjwt
 pwdlib[argon2]
+passlib>=1.7.4
 python-multipart
 python-docx
