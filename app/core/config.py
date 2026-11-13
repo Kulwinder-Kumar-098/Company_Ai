@@ -3,7 +3,7 @@
 
 from typing import Literal
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -104,6 +104,37 @@ class Settings(BaseSettings):
         gt=0,
         le=100,
     )
+
+    @field_validator("database_url")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        normalized = value.strip()
+        scheme, separator, remainder = normalized.partition("://")
+        if separator and scheme.casefold() in {"postgres", "postgresql"}:
+            normalized = f"postgresql+psycopg://{remainder}"
+
+        parsed = urlsplit(normalized)
+        if parsed.scheme.casefold() != "postgresql+psycopg":
+            return normalized
+
+        hostname = (parsed.hostname or "").casefold()
+        if hostname in {"localhost", "127.0.0.1", "::1"}:
+            return normalized
+
+        has_sslmode = any(
+            unquote_plus(parameter.partition("=")[0]).casefold() == "sslmode"
+            for parameter in parsed.query.split("&")
+            if parameter
+        )
+        if has_sslmode:
+            return normalized
+
+        query = (
+            f"{parsed.query}&sslmode=require"
+            if parsed.query
+            else "sslmode=require"
+        )
+        return urlunsplit(parsed._replace(query=query))
 
     @field_validator("ollama_host")
     @classmethod
