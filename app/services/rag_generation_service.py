@@ -41,7 +41,12 @@ def generate_rag_answer(question: str, context: str) -> str:
                     ),
                 },
             ],
-            options={"temperature": settings.rag_generation_temperature},
+            options={
+                "temperature": settings.rag_generation_temperature,
+                "num_ctx": settings.ollama_num_ctx,
+                "num_predict": settings.rag_max_answer_tokens,
+            },
+            keep_alive=settings.ollama_keep_alive,
         )
     except (httpx.TimeoutException, TimeoutError) as exc:
         raise RAGGenerationTimeoutError(

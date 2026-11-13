@@ -1,11 +1,13 @@
 """Provider selection and strict structured-output tests."""
 
 import json
+import logging
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from pydantic import SecretStr
+from pydantic import ValidationError
 
 from app.agents import orchestrator, planner_provider
 from app.agents.prompts import PLANNER_SYSTEM_PROMPT
@@ -65,7 +67,7 @@ def test_groq_request_uses_strict_schema_and_registered_tools(monkeypatch):
     )
 
     request = captured["request"]
-    assert captured["client"]["max_retries"] == 1
+    assert captured["client"]["max_retries"] == 0
     assert captured["client"]["timeout"] == 12
     assert request["model"] == "openai/gpt-oss-20b"
     assert request["temperature"] == 0
@@ -170,6 +172,64 @@ def test_groq_rate_limit_falls_back_to_gemini_with_provider_metadata(
     assert calls[0]["model"] == "gemini-test-model"
 
 
+def test_groq_http_429_falls_back_to_gemini(monkeypatch):
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: 10.0)
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(settings, "planner_rate_limit_cooldown_enabled", True)
+    groq_response = httpx.Response(
+        429,
+        headers={"Retry-After": "120"},
+        request=httpx.Request("POST", "https://api.groq.com"),
+    )
+    rate_limit = planner_provider.RateLimitError(
+        "rate limit",
+        response=groq_response,
+        body=None,
+    )
+    groq_calls = []
+    gemini_calls = []
+
+    def groq_completion(**_params):
+        groq_calls.append(True)
+        raise rate_limit
+
+    class FakeGroq:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=groq_completion)
+            )
+
+    def gemini_response(**kwargs):
+        gemini_calls.append(kwargs)
+        return '{"mode":"unsupported","tool_calls":[]}'
+
+    monkeypatch.setattr(planner_provider, "Groq", FakeGroq)
+    monkeypatch.setattr(
+        planner_provider,
+        "request_gemini_json",
+        gemini_response,
+    )
+
+    result = planner_provider.request_planner_json(
+        provider="groq",
+        system_prompt="synthetic system",
+        user_prompt="synthetic user",
+        model="groq-test-model",
+        api_key="groq-test-key",
+        timeout=1,
+        output_schema=RequestPlan,
+        ollama_client=object(),
+        fallback_api_key="gemini-test-key",
+        fallback_model="gemini-test-model",
+        include_provider=True,
+    )
+
+    assert result[1:] == ("gemini", "gemini-test-model")
+    assert len(groq_calls) == 1
+    assert len(gemini_calls) == 1
+    assert cooldowns.is_blocked("groq")
+
+
 def test_gemini_request_uses_json_schema_and_returns_text(monkeypatch):
     captured = {}
 
@@ -208,6 +268,86 @@ def test_gemini_request_uses_json_schema_and_returns_text(monkeypatch):
     assert schema.properties["tool_calls"].items.properties[
         "arguments"
     ].type == planner_provider.genai_types.Type.OBJECT
+
+
+def test_groq_and_gemini_log_only_token_usage(monkeypatch, caplog):
+    class FakeGroq:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **_params: SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(
+                                    content='{"mode":"unsupported","tool_calls":[]}'
+                                )
+                            )
+                        ],
+                        usage=SimpleNamespace(
+                            prompt_tokens=11,
+                            completion_tokens=7,
+                            total_tokens=18,
+                        ),
+                    )
+                )
+            )
+
+    class FakeGeminiClient:
+        def __init__(self, **_kwargs):
+            self.models = SimpleNamespace(
+                generate_content=lambda **_params: SimpleNamespace(
+                    text='{"mode":"unsupported","tool_calls":[]}',
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=13,
+                        candidates_token_count=5,
+                        total_token_count=18,
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(planner_provider, "Groq", FakeGroq)
+    monkeypatch.setattr(planner_provider.genai, "Client", FakeGeminiClient)
+    with caplog.at_level(
+        logging.INFO,
+        logger="app.agents.planner_provider",
+    ):
+        planner_provider.request_groq_json(
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="groq-test-model",
+            api_key="groq-test-key",
+            timeout=1,
+        )
+        planner_provider.request_gemini_json(
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="gemini-test-model",
+            api_key="gemini-test-key",
+            timeout=1,
+            output_schema=RequestPlan,
+        )
+
+    usage_logs = [
+        json.loads(record.getMessage().split("planner_token_usage ", 1)[1])
+        for record in caplog.records
+        if "planner_token_usage " in record.getMessage()
+    ]
+    assert usage_logs == [
+        {
+            "provider": "groq",
+            "model": "groq-test-model",
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        },
+        {
+            "provider": "gemini",
+            "model": "gemini-test-model",
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "total_tokens": 18,
+        },
+    ]
 
 
 def test_gemini_service_unavailable_is_mapped_safely(monkeypatch):
@@ -331,7 +471,11 @@ def test_provider_interface_dispatches_ollama_planner():
     assert result == '{"mode":"unsupported","tool_calls":[]}'
     assert calls[0]["model"] == "llama3.2:3b"
     assert calls[0]["format"] == RequestPlan.model_json_schema()
-    assert calls[0]["options"] == {"temperature": 0.0}
+    assert calls[0]["options"] == {
+        "temperature": 0.0,
+        "num_ctx": settings.ollama_num_ctx,
+    }
+    assert calls[0]["keep_alive"] == settings.ollama_keep_alive
 
 
 def test_groq_missing_key_is_safe_and_does_not_create_client():
@@ -345,7 +489,41 @@ def test_groq_missing_key_is_safe_and_does_not_create_client():
         )
 
     assert error.value.category == "provider_misconfigured"
+    assert error.value.provider == "groq"
     assert "api_key" not in str(error.value)
+
+
+def test_provider_cooldown_can_be_disabled(monkeypatch):
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: 10.0)
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(settings, "planner_rate_limit_cooldown_enabled", False)
+
+    planner_provider._record_rate_limit("groq", object())
+
+    assert not planner_provider._provider_is_cooling_down("groq")
+
+
+def test_token_usage_logging_can_be_disabled(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "planner_token_usage_logging_enabled", False)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="app.agents.planner_provider",
+    ):
+        planner_provider._log_token_usage(
+            "groq",
+            "synthetic-model",
+            SimpleNamespace(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+            ),
+            prompt_field="prompt_tokens",
+            completion_field="completion_tokens",
+            total_field="total_tokens",
+        )
+
+    assert not caplog.records
 
 
 @pytest.mark.parametrize(
@@ -386,6 +564,12 @@ def test_groq_provider_errors_are_mapped_without_exposing_messages(
     exception,
     category,
 ):
+    monkeypatch.setattr(
+        planner_provider,
+        "provider_cooldowns",
+        planner_provider.ProviderCooldowns(),
+    )
+
     class FakeGroq:
         def __init__(self, **_kwargs):
             self.chat = SimpleNamespace(
@@ -407,6 +591,203 @@ def test_groq_provider_errors_are_mapped_without_exposing_messages(
     assert error.value.category == category
     assert "authentication failure" not in str(error.value)
     assert "rate limit" not in str(error.value)
+    if category == "provider_rate_limit":
+        assert error.value.provider == "groq"
+
+
+def test_groq_rate_limit_uses_retry_after_and_sets_cooldown(monkeypatch):
+    now = [100.0]
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: now[0])
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": "120"},
+        request=httpx.Request("POST", "https://api.groq.com"),
+    )
+    exception = planner_provider.RateLimitError(
+        "rate limit",
+        response=response,
+        body=None,
+    )
+
+    class FakeGroq:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **_params: (_ for _ in ()).throw(exception)
+                )
+            )
+
+    monkeypatch.setattr(planner_provider, "Groq", FakeGroq)
+    with pytest.raises(planner_provider.PlannerProviderError):
+        planner_provider.request_groq_json(
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="groq-test-model",
+            api_key="groq-test-key",
+            timeout=1,
+        )
+
+    assert cooldowns.is_blocked("groq")
+    now[0] += 120
+    assert not cooldowns.is_blocked("groq")
+
+
+def test_rate_limit_cooldown_uses_configured_default_and_clamps_header(
+    monkeypatch,
+):
+    now = [100.0]
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: now[0])
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(settings, "planner_rate_limit_cooldown_seconds", 600)
+    planner_provider._record_rate_limit("gemini", object())
+
+    now[0] += 301
+    assert cooldowns.is_blocked("gemini")
+    now[0] += 299
+    assert not cooldowns.is_blocked("gemini")
+
+    now[0] = 1000.0
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": "999"},
+        request=httpx.Request("POST", "https://api.groq.com"),
+    )
+    planner_provider._record_rate_limit("groq", response)
+    now[0] += 300
+    assert not cooldowns.is_blocked("groq")
+
+
+def test_groq_cooldown_skips_primary_and_uses_gemini(monkeypatch):
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: 10.0)
+    cooldowns.block("groq", 30)
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(
+        planner_provider,
+        "request_groq_json",
+        lambda **_kwargs: pytest.fail("cooling Groq provider was called"),
+    )
+    gemini_calls = []
+    monkeypatch.setattr(
+        planner_provider,
+        "request_gemini_json",
+        lambda **kwargs: gemini_calls.append(kwargs)
+        or '{"mode":"unsupported","tool_calls":[]}',
+    )
+
+    response = planner_provider.request_planner_json(
+        provider="groq",
+        system_prompt="synthetic",
+        user_prompt="synthetic",
+        model="groq-test-model",
+        api_key="groq-test-key",
+        timeout=1,
+        output_schema=RequestPlan,
+        ollama_client=object(),
+        fallback_api_key="gemini-test-key",
+        fallback_model="gemini-test-model",
+        include_provider=True,
+    )
+
+    assert response[1:] == ("gemini", "gemini-test-model")
+    assert len(gemini_calls) == 1
+
+
+def test_groq_cooldown_without_fallback_makes_no_network_call(monkeypatch):
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: 10.0)
+    cooldowns.block("groq", 30)
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(
+        planner_provider,
+        "request_groq_json",
+        lambda **_kwargs: pytest.fail("cooling Groq provider was called"),
+    )
+
+    with pytest.raises(planner_provider.PlannerProviderError) as error:
+        planner_provider.request_planner_json(
+            provider="groq",
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="groq-test-model",
+            api_key="groq-test-key",
+            timeout=1,
+            output_schema=RequestPlan,
+            ollama_client=object(),
+        )
+
+    assert error.value.category == "provider_rate_limit"
+    assert error.value.provider == "groq"
+
+
+def test_gemini_cooldown_skips_fallback_call(monkeypatch):
+    cooldowns = planner_provider.ProviderCooldowns(clock=lambda: 10.0)
+    cooldowns.block("groq", 30)
+    cooldowns.block("gemini", 30)
+    monkeypatch.setattr(planner_provider, "provider_cooldowns", cooldowns)
+    monkeypatch.setattr(
+        planner_provider,
+        "request_gemini_json",
+        lambda **_kwargs: pytest.fail("cooling Gemini provider was called"),
+    )
+
+    with pytest.raises(planner_provider.PlannerProviderError) as error:
+        planner_provider.request_planner_json(
+            provider="groq",
+            system_prompt="synthetic",
+            user_prompt="synthetic",
+            model="groq-test-model",
+            api_key="groq-test-key",
+            timeout=1,
+            output_schema=RequestPlan,
+            ollama_client=object(),
+            fallback_api_key="gemini-test-key",
+            fallback_model="gemini-test-model",
+        )
+
+    assert error.value.category == "provider_rate_limit"
+    assert error.value.provider == "gemini"
+
+
+def test_rate_limit_failure_is_not_retried_by_model_validation(monkeypatch):
+    calls = []
+
+    def rate_limited(**_kwargs):
+        calls.append(True)
+        raise planner_provider.PlannerProviderError(
+            "provider_rate_limit",
+            provider="groq",
+            model="groq-test-model",
+        )
+
+    monkeypatch.setattr(orchestrator, "_request_model_json", rate_limited)
+    result = orchestrator.evaluate_planner_query(
+        "Synthetic rate-limit test question.",
+        provider="groq",
+    )
+
+    assert len(calls) == 1
+    assert result.error_category == "provider_rate_limit"
+
+
+def test_planning_outage_returns_failure_answer_and_telemetry(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        orchestrator,
+        "emit_agent_event",
+        lambda **event: events.append(event),
+    )
+    result = orchestrator._final_answer_node(
+        {
+            "safe_error": "planning_unavailable",
+            "plan": RequestPlan(mode="unsupported"),
+            "execution_mode": "unsupported",
+            "trace_id": "planner-outage-test",
+        }
+    )
+
+    assert result["answer"] == orchestrator.MODEL_UNAVAILABLE_ANSWER
+    assert events[-1]["event"] == "final_response"
+    assert events[-1]["outcome"] == "failure"
 
 
 def test_planner_provider_dispatch_keeps_ollama_answer_path(monkeypatch):
@@ -445,6 +826,11 @@ def test_planner_provider_dispatch_keeps_ollama_answer_path(monkeypatch):
     assert planner_calls[0]["ollama_client"] is orchestrator._ollama_client
     assert ollama_calls[0]["model"] == "llama3.2:3b"
     assert ollama_calls[0]["format"] == orchestrator.GeneratedAnswer.model_json_schema()
+    assert ollama_calls[0]["options"] == {
+        "temperature": 0.0,
+        "num_ctx": settings.ollama_num_ctx,
+    }
+    assert ollama_calls[0]["keep_alive"] == settings.ollama_keep_alive
     assert answer == '{"mode":"unsupported","tool_calls":[]}'
 
 
@@ -593,6 +979,49 @@ def test_planner_model_falls_back_to_answer_model():
     assert configured.effective_planner_model == "local-answer-model"
     assert configured.planner_provider == "ollama"
     assert configured.gemini_planner_model == "gemini-3.8-flash"
+    assert configured.planner_fast_path_enabled is True
+    assert configured.smalltalk_enabled is True
+    assert configured.smalltalk_llm_fallback_enabled is True
+    assert configured.smalltalk_llm_timeout_seconds == 20
+    assert configured.smalltalk_max_query_characters == 200
+    assert configured.smalltalk_max_answer_characters == 600
+    assert configured.planner_cache_enabled is True
+    assert configured.planner_cache_ttl_seconds == 21600
+    assert configured.planner_cache_max_entries == 512
+    assert configured.planner_rate_limit_cooldown_seconds == 30
+    assert configured.chat_rag_top_k == 4
+    assert configured.ollama_keep_alive == "30m"
+    assert configured.ollama_num_ctx == 4096
+    assert configured.rag_max_answer_tokens == 600
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("planner_cache_ttl_seconds", 0),
+        ("planner_cache_ttl_seconds", 604801),
+        ("planner_cache_max_entries", 0),
+        ("planner_cache_max_entries", 10001),
+        ("planner_rate_limit_cooldown_seconds", 0),
+        ("planner_rate_limit_cooldown_seconds", 601),
+        ("chat_rag_top_k", 0),
+        ("ollama_num_ctx", 1023),
+        ("ollama_num_ctx", 32769),
+        ("rag_max_answer_tokens", 63),
+        ("rag_max_answer_tokens", 4097),
+        ("smalltalk_llm_timeout_seconds", 0),
+        ("smalltalk_llm_timeout_seconds", 121),
+        ("smalltalk_max_query_characters", 0),
+        ("smalltalk_max_answer_characters", 0),
+    ],
+)
+def test_planner_and_ollama_settings_validate_ranges(field, value):
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            database_url="sqlite://",
+            **{field: value},
+        )
 
 
 def test_provider_specific_evaluation_and_fixture_are_offline(monkeypatch):

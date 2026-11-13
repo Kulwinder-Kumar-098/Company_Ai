@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.agents import orchestrator
+from app.agents import orchestrator, smalltalk
 from app.agents.workflows import GeneratedAnswer, RequestPlan
 from app.api.dependencies import get_db
 from app.api.tool_routes import router as tool_router
@@ -824,6 +824,132 @@ def _rag_response(answer="Document answer."):
     }
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_answer"),
+    [
+        (
+            "hi",
+            "Hi! I'm the Company AI assistant. What question can I help with?",
+        ),
+        (
+            "hlo",
+            "Hi! I'm the Company AI assistant. What question can I help with?",
+        ),
+        (
+            "how are you",
+            "I'm doing well, thanks for asking! What question can I help with?",
+        ),
+        (
+            "how can u help me",
+            "I can answer questions from company documents and policies, and, "
+            "depending on your access, help with project, task, and employee "
+            "information. What question can I help with?",
+        ),
+    ],
+)
+def test_smalltalk_gets_local_answer_without_planner_or_rag(
+    tool_db,
+    monkeypatch,
+    query,
+    expected_answer,
+):
+    db, employees = tool_db
+    monkeypatch.setattr(settings, "smalltalk_enabled", True)
+    monkeypatch.setattr(
+        orchestrator,
+        "request_planner_json",
+        lambda **_kwargs: pytest.fail("small-talk message called planner"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_ollama_client",
+        type(
+            "FailingOllamaClient",
+            (),
+            {
+                "chat": lambda *_args, **_kwargs: pytest.fail(
+                    "small-talk message called Ollama"
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail("small-talk message called RAG"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "has_permission",
+        lambda *_args, **_kwargs: pytest.fail(
+            "small-talk message checked document permission"
+        ),
+    )
+
+    result = orchestrator.run_agent_query(
+        db,
+        employees["GUEST"],
+        query,
+    )
+
+    assert result["answer"] == expected_answer
+    assert result["sources"] == []
+
+
+def test_successful_unsupported_plan_can_use_local_smalltalk_fallback(
+    tool_db,
+    monkeypatch,
+):
+    db, employees = tool_db
+    _stub_agent_models(monkeypatch, RequestPlan(mode="unsupported"))
+    monkeypatch.setattr(settings, "smalltalk_enabled", True)
+    monkeypatch.setattr(settings, "smalltalk_llm_fallback_enabled", True)
+    captured = {}
+
+    class FakeSmalltalkClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        def chat(self, **kwargs):
+            captured["request"] = kwargs
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "kind": "smalltalk",
+                            "reply": (
+                                "I'm glad to chat! What question can I help with?"
+                            ),
+                        }
+                    )
+                }
+            }
+
+    monkeypatch.setattr(smalltalk.ollama, "Client", FakeSmalltalkClient)
+    monkeypatch.setattr(
+        orchestrator,
+        "answer_rag_query",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unsupported small-talk fallback called RAG"
+        ),
+    )
+
+    result = orchestrator.run_agent_query(
+        db,
+        employees["GUEST"],
+        "Tell me a fun fact.",
+    )
+
+    assert result["answer"] == (
+        "I'm glad to chat! What question can I help with?"
+    )
+    assert result["sources"] == []
+    assert captured["timeout"] == settings.smalltalk_llm_timeout_seconds
+    assert captured["request"]["messages"][1]["content"] == (
+        "Tell me a fun fact."
+    )
+
+
 def test_agent_graph_routes_document_only_question_to_secure_rag(
     tool_db,
     monkeypatch,
@@ -854,7 +980,13 @@ def test_agent_graph_routes_document_only_question_to_secure_rag(
             db,
             employees["EMP-ONE"],
             "What does the policy say?",
-            {"top_k": 5, "trace_id": result["trace_id"]},
+            {
+                "top_k": min(
+                    settings.chat_rag_top_k,
+                    settings.rag_max_top_k,
+                ),
+                "trace_id": result["trace_id"],
+            },
         )
     ]
 
@@ -1225,10 +1357,7 @@ def test_agent_graph_handles_model_unavailability_and_malformed_output(
         db, employees["EMP-ONE"], "A question"
     )
     assert len(calls) == 2
-    assert result["answer"] == (
-        "The available documents do not provide enough information to answer "
-        "that question."
-    )
+    assert result["answer"] == orchestrator.MODEL_UNAVAILABLE_ANSWER
 
     malformed_calls = []
 

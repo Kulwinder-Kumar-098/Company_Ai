@@ -4,6 +4,7 @@
 
 import ollama
 
+from app.core.config import settings
 from app.ingestion.indexing import search_faiss
 
 LLM_MODEL = "llama3.2:3b"
@@ -64,6 +65,8 @@ def answer_question(question: str, top_k: int = 3) -> dict:
                 ),
             },
         ],
+        options={"num_ctx": settings.ollama_num_ctx},
+        keep_alive=settings.ollama_keep_alive,
     )
 
     return {

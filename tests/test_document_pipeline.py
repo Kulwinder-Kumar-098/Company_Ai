@@ -880,9 +880,8 @@ def test_retrieval_filters_inaccessible_document_text_before_rag(
     retrieved = retrieve_document_chunks(db, reader, "company policy")
     model_messages = {}
 
-    def fake_chat(*, model, messages):
-        model_messages["model"] = model
-        model_messages["messages"] = messages
+    def fake_chat(**kwargs):
+        model_messages.update(kwargs)
         return {"message": {"content": "Grounded answer [company.txt]."}}
 
     monkeypatch.setattr(document_rag_service.ollama, "chat", fake_chat)
@@ -899,6 +898,10 @@ def test_retrieval_filters_inaccessible_document_text_before_rag(
         "own private context",
     }
     assert "private secret context" not in prompt
+    assert model_messages["keep_alive"] == settings.ollama_keep_alive
+    assert model_messages["options"] == {
+        "num_ctx": settings.ollama_num_ctx,
+    }
     assert len(answer["sources"]) == 3
     assert answer["answer"].startswith("Grounded answer")
 
@@ -981,6 +984,10 @@ def test_chat_endpoint_requires_chat_use_not_documents_read(
         algorithm=settings.jwt_algorithm,
     )
     with TestClient(app) as client:
+        unauthenticated = client.post(
+            "/chat/ask",
+            json={"message": "hi"},
+        )
         headers = {"Authorization": f"Bearer {token}"}
         denied_response = client.post(
             "/chat/ask",
@@ -1000,6 +1007,7 @@ def test_chat_endpoint_requires_chat_use_not_documents_read(
             json={"message": "Question", "employee_id": "OTHER"},
         )
 
+    assert unauthenticated.status_code == 401
     assert denied_response.status_code == 403
     assert response.status_code == 200
     assert response.json()["answer"] == "Answer"

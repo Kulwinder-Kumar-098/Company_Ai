@@ -159,28 +159,17 @@ else:
         # Query backend
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("⏳ *Analyzing request and querying company database/documents...*")
+            message_placeholder.markdown("⏳ *Thinking...*")
 
             headers = {
                 "Authorization": f"Bearer {st.session_state.token}",
                 "Content-Type": "application/json",
             }
-            # Include recent chat history context for follow-up questions
-            context_prompt = user_prompt
-            if len(st.session_state.messages) > 1:
-                # Get the last 2 conversation turns
-                recent_history = [
-                    f"{m['role'].capitalize()}: {m['content']}"
-                    for m in st.session_state.messages[-5:-1]
-                ]
-                context_prefix = "Previous conversation context:\n" + "\n".join(recent_history)
-                context_prompt = f"{context_prefix}\n\nCurrent user request: {user_prompt}"
-
             try:
                 response = requests.post(
                     f"{API_BASE_URL}/chat/ask",
                     headers=headers,
-                    json={"message": context_prompt},
+                    json={"message": user_prompt},
                     timeout=60,
                 )
                 if response.status_code == 200:

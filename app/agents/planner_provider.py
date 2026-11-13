@@ -1,7 +1,13 @@
 """Provider adapters for structured planner responses."""
 
 import json
+import logging
 from copy import deepcopy
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import math
+from threading import Lock
+import time
 from typing import Any
 
 import httpx
@@ -20,7 +26,10 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.tools.registry import TOOLS
+
+logger = logging.getLogger(__name__)
 
 
 class PlannerProviderError(RuntimeError):
@@ -37,6 +46,110 @@ class PlannerProviderError(RuntimeError):
         self.category = category
         self.provider = provider
         self.model = model
+
+
+class ProviderCooldowns:
+    """Thread-safe per-provider cooldown state with an injectable clock."""
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self._clock = clock
+        self._lock = Lock()
+        self._blocked_until: dict[str, float] = {}
+
+    def block(self, provider: str, seconds: float) -> None:
+        bounded_seconds = max(1.0, min(seconds, 600.0))
+        with self._lock:
+            self._blocked_until[provider] = self._clock() + bounded_seconds
+
+    def is_blocked(self, provider: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            blocked_until = self._blocked_until.get(provider)
+            if blocked_until is None:
+                return False
+            if blocked_until <= now:
+                del self._blocked_until[provider]
+                return False
+            return True
+
+
+provider_cooldowns = ProviderCooldowns()
+
+
+def _retry_after_seconds(response: object) -> float | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    if not isinstance(value, str):
+        return None
+    try:
+        seconds = float(value)
+        return seconds if math.isfinite(seconds) else None
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _record_rate_limit(provider: str, response: object) -> None:
+    if not settings.planner_rate_limit_cooldown_enabled:
+        return
+    delay = _retry_after_seconds(response)
+    if delay is None:
+        delay = settings.planner_rate_limit_cooldown_seconds
+    else:
+        delay = max(1.0, min(delay, 300.0))
+    provider_cooldowns.block(provider, delay)
+
+
+def _provider_is_cooling_down(provider: str) -> bool:
+    return (
+        settings.planner_rate_limit_cooldown_enabled
+        and provider_cooldowns.is_blocked(provider)
+    )
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _log_token_usage(
+    provider: str,
+    model: str,
+    usage: object,
+    *,
+    prompt_field: str,
+    completion_field: str,
+    total_field: str,
+) -> None:
+    if not settings.planner_token_usage_logging_enabled:
+        return
+    logger.info(
+        "planner_token_usage %s",
+        json.dumps(
+            {
+                "provider": provider,
+                "model": model,
+                "prompt_tokens": _token_count(
+                    getattr(usage, prompt_field, None)
+                ),
+                "completion_tokens": _token_count(
+                    getattr(usage, completion_field, None)
+                ),
+                "total_tokens": _token_count(
+                    getattr(usage, total_field, None)
+                ),
+            },
+            sort_keys=True,
+        ),
+    )
 
 
 def _gemini_response_schema(schema: dict[str, Any]) -> genai_types.Schema:
@@ -190,14 +303,14 @@ def request_groq_json(
     if not api_key or not api_key.strip():
         raise PlannerProviderError(
             "provider_misconfigured",
-            provider="gemini",
+            provider="groq",
             model=model,
         )
     try:
         client = Groq(
             api_key=api_key,
             timeout=timeout,
-            max_retries=1,
+            max_retries=0,
         )
         response = client.chat.completions.create(
             model=model,
@@ -216,29 +329,78 @@ def request_groq_json(
             temperature=0,
             max_completion_tokens=2048,
         )
+        _log_token_usage(
+            "groq",
+            model,
+            getattr(response, "usage", None),
+            prompt_field="prompt_tokens",
+            completion_field="completion_tokens",
+            total_field="total_tokens",
+        )
     except AuthenticationError as exc:
-        raise PlannerProviderError("provider_authentication") from exc
+        raise PlannerProviderError(
+            "provider_authentication",
+            provider="groq",
+            model=model,
+        ) from exc
     except RateLimitError as exc:
-        raise PlannerProviderError("provider_rate_limit") from exc
+        _record_rate_limit("groq", exc.response)
+        raise PlannerProviderError(
+            "provider_rate_limit",
+            provider="groq",
+            model=model,
+        ) from exc
     except APITimeoutError as exc:
-        raise PlannerProviderError("provider_timeout") from exc
+        raise PlannerProviderError(
+            "provider_timeout",
+            provider="groq",
+            model=model,
+        ) from exc
     except APIConnectionError as exc:
-        raise PlannerProviderError("provider_unavailable") from exc
+        raise PlannerProviderError(
+            "provider_unavailable",
+            provider="groq",
+            model=model,
+        ) from exc
     except BadRequestError as exc:
-        raise PlannerProviderError("provider_bad_request") from exc
+        raise PlannerProviderError(
+            "provider_bad_request",
+            provider="groq",
+            model=model,
+        ) from exc
     except APIStatusError as exc:
-        raise PlannerProviderError("provider_error") from exc
+        raise PlannerProviderError(
+            "provider_error",
+            provider="groq",
+            model=model,
+        ) from exc
     except APIError as exc:
-        raise PlannerProviderError("provider_error") from exc
+        raise PlannerProviderError(
+            "provider_error",
+            provider="groq",
+            model=model,
+        ) from exc
 
     if not response.choices:
-        raise PlannerProviderError("invalid_model_output")
+        raise PlannerProviderError(
+            "invalid_model_output",
+            provider="groq",
+            model=model,
+        )
     try:
         content = response.choices[0].message.content
     except (AttributeError, IndexError, TypeError) as exc:
-        raise PlannerProviderError("invalid_model_output") from exc
+        raise PlannerProviderError(
+            "invalid_model_output",
+            provider="groq",
+            model=model,
+        ) from exc
     if not isinstance(content, str) or not content.strip():
-        raise PlannerProviderError("invalid_model_output")
+        raise PlannerProviderError(
+            "invalid_model_output",
+            provider="groq",
+            model=model,
+        )
     return content.strip()
 
 
@@ -270,10 +432,19 @@ def request_gemini_json(
                 temperature=0,
             ),
         )
+        _log_token_usage(
+            "gemini",
+            model,
+            getattr(response, "usage_metadata", None),
+            prompt_field="prompt_token_count",
+            completion_field="candidates_token_count",
+            total_field="total_token_count",
+        )
         content = response.text
     except genai_errors.APIError as exc:
         if exc.code == 429:
             category = "provider_rate_limit"
+            _record_rate_limit("gemini", exc.response)
         elif exc.code in {401, 403}:
             category = "provider_authentication"
         elif exc.code == 400:
@@ -333,28 +504,46 @@ def request_planner_json(
     selected_provider = provider
     selected_model = model
     if provider == "groq":
-        try:
-            raw = request_groq_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+        use_gemini = _provider_is_cooling_down("groq")
+        if use_gemini and (
+            not fallback_api_key or not fallback_api_key.strip()
+        ):
+            raise PlannerProviderError(
+                "provider_rate_limit",
+                provider="groq",
                 model=model,
-                api_key=api_key,
-                timeout=timeout,
             )
-        except PlannerProviderError as exc:
-            if (
-                not fallback_api_key
-                or not fallback_api_key.strip()
-                or exc.category not in {
-                    "provider_rate_limit",
-                    "provider_timeout",
-                    "provider_unavailable",
-                    "provider_error",
-                }
-            ):
-                raise
+        if not use_gemini:
+            try:
+                raw = request_groq_json(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=model,
+                    api_key=api_key,
+                    timeout=timeout,
+                )
+            except PlannerProviderError as exc:
+                if (
+                    not fallback_api_key
+                    or not fallback_api_key.strip()
+                    or exc.category not in {
+                        "provider_rate_limit",
+                        "provider_timeout",
+                        "provider_unavailable",
+                        "provider_error",
+                    }
+                ):
+                    raise
+                use_gemini = True
+        if use_gemini:
             selected_provider = "gemini"
-            selected_model = fallback_model or "gemini-2.5-flash"
+            selected_model = fallback_model or "gemini-3.8-flash"
+            if _provider_is_cooling_down("gemini"):
+                raise PlannerProviderError(
+                    "provider_rate_limit",
+                    provider="gemini",
+                    model=selected_model,
+                )
             raw = request_gemini_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -391,7 +580,11 @@ def request_planner_json(
             {"role": "user", "content": user_prompt},
         ],
         format=output_schema.model_json_schema(),
-        options={"temperature": 0.0},
+        options={
+            "temperature": 0.0,
+            "num_ctx": settings.ollama_num_ctx,
+        },
+        keep_alive=settings.ollama_keep_alive,
     )
     if isinstance(response, dict):
         message = response.get("message")

@@ -61,6 +61,8 @@ class AgentState(TypedDict):
     plan: RequestPlan | None
     execution_mode: str | None
     safe_error: str | None
+    direct_answer: str | None
+    planner_succeeded: bool
     rag_result: dict[str, object] | None
     tool_results: list[dict[str, object]]
     evidence: str

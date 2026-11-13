@@ -56,6 +56,8 @@ def answer_document_question(
                 ),
             },
         ],
+        options={"num_ctx": settings.ollama_num_ctx},
+        keep_alive=settings.ollama_keep_alive,
     )
     message = (
         response.get("message")

@@ -15,7 +15,7 @@ MAX_NODE_NAMES = {
     "aggregate_results",
     "generate_answer",
 }
-VALID_MODES = {"rag", "structured", "mixed", "unsupported"}
+VALID_MODES = {"rag", "structured", "mixed", "unsupported", "smalltalk"}
 VALID_ERRORS = {
     "authorization_denied",
     "data_unavailable",
@@ -50,6 +50,7 @@ VALID_EVENTS = {
     "model_call",
     "node_execution",
     "permission_check",
+    "planner_fast_path",
     "rag_execution",
     "tool_execution",
     "tool_selection",
@@ -228,6 +229,8 @@ class AgentTelemetryAggregator:
                 self._counters[f"{prefix}_failures"] += 1
                 if error in {"model_timeout", "provider_timeout"}:
                     self._counters[f"{prefix}_timeouts"] += 1
+        elif event_name == "planner_fast_path":
+            self._counters["planner_fast_path_hits"] += 1
 
     def _record_latency(self, event: dict[str, Any]) -> None:
         duration = event.get("duration_ms")
@@ -300,6 +303,9 @@ class AgentTelemetryAggregator:
                 "aggregation": "process_local_cumulative",
                 "retained_trace_summaries": len(self._traces),
                 "total_graph_executions": graph_executions,
+                "planner_fast_path_hits": self._counters[
+                    "planner_fast_path_hits"
+                ],
                 "execution_mode_distribution": dict(self._by_mode),
                 "graph_outcomes": {
                     "success": graph_successes,

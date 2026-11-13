@@ -19,6 +19,12 @@ from app.agents.planner_provider import (
     PlannerProviderError,
     request_planner_json,
 )
+from app.agents.fast_router import fast_route
+from app.agents.plan_cache import plan_cache, plan_cache_key
+from app.agents.smalltalk import classify_smalltalk, deterministic_reply
+from app.agents.smalltalk import generate_smalltalk_reply
+from app.agents.tool_catalog import build_tool_catalog
+from app.agents.tool_catalog import planner_fingerprint
 from app.agents.workflows import (
     MAX_FINAL_ANSWER_CHARACTERS,
     MAX_TOOL_CALLS,
@@ -136,7 +142,11 @@ def _request_model_json(
             {"role": "user", "content": user_prompt},
         ],
         format=output_schema.model_json_schema(),
-        options={"temperature": 0.0},
+        options={
+            "temperature": 0.0,
+            "num_ctx": settings.ollama_num_ctx,
+        },
+        keep_alive=settings.ollama_keep_alive,
     )
     return _extract_message_content(response)
 
@@ -226,6 +236,7 @@ def _validated_model_output(
                     "provider_authentication",
                     "provider_misconfigured",
                     "provider_bad_request",
+                    "provider_rate_limit",
                 }
             ):
                 raise ModelResponseError(category) from exc
@@ -238,14 +249,7 @@ def _validated_model_output(
 
 
 def _tool_catalog() -> list[dict[str, object]]:
-    return [
-        {
-            "name": name,
-            "description": definition.description,
-            "arguments_schema": definition.input_schema.model_json_schema(),
-        }
-        for name, definition in TOOLS.items()
-    ]
+    return build_tool_catalog()
 
 
 def validate_registered_plan(plan: RequestPlan) -> RequestPlan:
@@ -276,6 +280,7 @@ def evaluate_planner_query(
             "max_tool_calls": MAX_TOOL_CALLS,
         },
         ensure_ascii=False,
+        separators=(",", ":"),
     )
     parsed: RequestPlan | GeneratedAnswer | None = None
     provider_token = _planner_provider_override.set(provider)
@@ -314,18 +319,98 @@ def evaluate_planner_query(
     return PlannerEvaluationResult(plan, None, selected_tool_names)
 
 def _plan_node(state: AgentState) -> dict[str, object]:
+    smalltalk_kind = classify_smalltalk(state["query"])
+    if smalltalk_kind is not None:
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="planner_fast_path",
+            outcome="selected",
+            mode="smalltalk",
+        )
+        return {
+            "plan": RequestPlan(mode="unsupported"),
+            "execution_mode": "smalltalk",
+            "safe_error": None,
+            "direct_answer": deterministic_reply(smalltalk_kind),
+            "planner_succeeded": False,
+        }
+
+    plan = fast_route(state["query"])
+    if plan is not None:
+        emit_agent_event(
+            trace_id=state["trace_id"],
+            event="planner_fast_path",
+            outcome="selected",
+            mode=plan.mode,
+        )
+        return {
+            "plan": plan,
+            "execution_mode": plan.mode,
+            "safe_error": None,
+        }
+
+    cache_enabled = settings.planner_cache_enabled
+    cache_key = plan_cache_key(
+        state["query"],
+        planner_fingerprint(),
+        settings.planner_provider,
+        settings.effective_planner_model,
+    )
+    if cache_enabled:
+        cached_plan = plan_cache.get(cache_key)
+        if cached_plan is not None:
+            try:
+                plan = validate_registered_plan(cached_plan)
+            except (InvalidPlannedArgumentsError, ValueError):
+                plan_cache.discard(cache_key)
+            else:
+                for selected_tool in plan.tool_calls:
+                    emit_agent_event(
+                        trace_id=state["trace_id"],
+                        event="tool_selection",
+                        outcome="selected",
+                        mode=plan.mode,
+                        tool_name=selected_tool.name,
+                    )
+                return {
+                    "plan": plan,
+                    "execution_mode": plan.mode,
+                    "safe_error": None,
+                    "planner_succeeded": True,
+                }
+
     planner_result = evaluate_planner_query(
         state["query"],
         trace_id=state["trace_id"],
     )
     plan = planner_result.plan
     error_category = planner_result.error_category
+    if cache_enabled and plan is not None and error_category is None:
+        plan_cache.put(
+            cache_key,
+            plan,
+            ttl_seconds=settings.planner_cache_ttl_seconds,
+            max_entries=settings.planner_cache_max_entries,
+        )
     if plan is None:
         logger.warning("Agent planner failed closed: %s", error_category)
+        safe_error = (
+            None
+            if error_category
+            in {
+                "invalid_arguments",
+                "invalid_model_json",
+                "invalid_model_output",
+                "invalid_model_schema",
+                "invalid_plan",
+            }
+            else "planning_unavailable"
+        )
         return {
             "plan": RequestPlan(mode="unsupported"),
             "execution_mode": "unsupported",
-            "safe_error": "planning_unavailable",
+            "safe_error": safe_error,
+            "planner_succeeded": False,
         }
     for selected_tool in plan.tool_calls:
         emit_agent_event(
@@ -339,7 +424,16 @@ def _plan_node(state: AgentState) -> dict[str, object]:
         "plan": plan,
         "execution_mode": plan.mode,
         "safe_error": None,
+        "planner_succeeded": True,
     }
+
+
+def _route_after_plan(state: AgentState) -> str:
+    return (
+        "generate_answer"
+        if state.get("direct_answer") is not None
+        else "authorize_plan"
+    )
 
 
 def _route_plan(state: AgentState) -> str:
@@ -399,7 +493,7 @@ def _retrieval_node(state: AgentState) -> dict[str, object]:
             state["db"],
             state["actor"],
             state["query"],
-            top_k=min(5, settings.rag_max_top_k),
+            top_k=min(settings.chat_rag_top_k, settings.rag_max_top_k),
             trace_id=state["trace_id"],
         )
         validated = RAGQueryResponse.model_validate(result)
@@ -664,8 +758,27 @@ def _final_answer_node(state: AgentState) -> dict[str, object]:
     started = time.perf_counter()
     answer: str
     plan = state["plan"]
-    if plan is None or plan.mode == "unsupported":
+    direct_answer = state.get("direct_answer")
+    if direct_answer is not None:
+        answer = direct_answer
+    elif state["safe_error"] == "planning_unavailable":
+        answer = MODEL_UNAVAILABLE_ANSWER
+    elif plan is None:
         answer = INSUFFICIENT_CONTEXT_ANSWER
+    elif plan.mode == "unsupported":
+        answer = INSUFFICIENT_CONTEXT_ANSWER
+        if (
+            state.get("planner_succeeded") is True
+            and state["safe_error"] is None
+            and settings.smalltalk_enabled
+            and settings.smalltalk_llm_fallback_enabled
+            and len(state["query"])
+            <= settings.smalltalk_max_query_characters
+        ):
+            answer = (
+                generate_smalltalk_reply(state["query"])
+                or INSUFFICIENT_CONTEXT_ANSWER
+            )
     elif state["safe_error"] == "permission_denied":
         answer = ACCESS_DENIED_ANSWER
     elif state["safe_error"] in {
@@ -784,7 +897,14 @@ def build_agent_graph():
     )
 
     graph.add_edge(START, "plan")
-    graph.add_edge("plan", "authorize_plan")
+    graph.add_conditional_edges(
+        "plan",
+        _route_after_plan,
+        {
+            "generate_answer": "generate_answer",
+            "authorize_plan": "authorize_plan",
+        },
+    )
     graph.add_conditional_edges(
         "authorize_plan",
         _route_authorized_plan,
@@ -837,6 +957,8 @@ def run_agent_query(
         "plan": None,
         "execution_mode": None,
         "safe_error": None,
+        "direct_answer": None,
+        "planner_succeeded": False,
         "rag_result": None,
         "tool_results": [],
         "evidence": "",

@@ -125,6 +125,22 @@ def test_aggregator_calculates_counts_latency_and_trace_outcomes():
     ]
 
 
+def test_smalltalk_execution_mode_is_retained_in_telemetry():
+    aggregator = AgentTelemetryAggregator()
+    aggregator.record(
+        {
+            "trace_id": "00000000-0000-0000-0000-000000000099",
+            "event": "graph_execution",
+            "outcome": "success",
+            "mode": "smalltalk",
+        }
+    )
+
+    assert aggregator.snapshot()["execution_mode_distribution"] == {
+        "smalltalk": 1,
+    }
+
+
 def test_aggregator_redacts_unknown_and_sensitive_fields():
     aggregator = AgentTelemetryAggregator()
     confidential = "PRIVATE_SYNTHETIC_SENTINEL"

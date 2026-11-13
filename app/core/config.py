@@ -54,6 +54,38 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
     gemini_planner_model: str = "gemini-3.8-flash"
+    planner_fast_path_enabled: bool = True
+    smalltalk_enabled: bool = True
+    smalltalk_llm_fallback_enabled: bool = True
+    smalltalk_llm_timeout_seconds: int = Field(
+        default=20,
+        ge=1,
+        le=120,
+    )
+    smalltalk_max_query_characters: int = Field(default=200, ge=1)
+    smalltalk_max_answer_characters: int = Field(default=600, ge=1)
+    planner_cache_enabled: bool = True
+    planner_cache_ttl_seconds: int = Field(
+        default=21600,
+        ge=1,
+        le=604800,
+    )
+    planner_cache_max_entries: int = Field(
+        default=512,
+        ge=1,
+        le=10000,
+    )
+    planner_rate_limit_cooldown_enabled: bool = True
+    planner_rate_limit_cooldown_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=600,
+    )
+    planner_token_usage_logging_enabled: bool = True
+    chat_rag_top_k: int = Field(default=4, ge=1)
+    ollama_keep_alive: str = "30m"
+    ollama_num_ctx: int = Field(default=4096, ge=1024, le=32768)
+    rag_max_answer_tokens: int = Field(default=600, ge=64, le=4096)
     document_worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
     document_job_lease_seconds: int = Field(default=3600, gt=0)
     document_job_max_attempts: int = Field(default=5, gt=0, le=20)

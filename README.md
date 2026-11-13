@@ -28,6 +28,24 @@ Gemini when `GEMINI_API_KEY` is configured. `GEMINI_PLANNER_MODEL` defaults to
 `gemini-3.8-flash`. Gemini is used only as a planner fallback; answer generation
 continues to use the configured Ollama model.
 
+Small-talk messages such as greetings, thanks, and capability questions receive
+a deterministic local response without planner or RAG calls. For other
+unsupported requests, an optional local Ollama small-talk check can be disabled
+with `SMALLTALK_LLM_FALLBACK_ENABLED=false`; it receives no company data and
+fails closed to the existing insufficient-context answer. Disable all
+small-talk handling with `SMALLTALK_ENABLED=false`. The planner also has a
+conservative policy-only RAG fast path and an in-process validated-plan cache;
+these can be disabled with
+`PLANNER_FAST_PATH_ENABLED=false` and `PLANNER_CACHE_ENABLED=false`. The cache
+defaults to a six-hour TTL and at most 512 entries. Provider rate limits use a
+configurable cooldown, and hosted planner token counts can be disabled with
+`PLANNER_TOKEN_USAGE_LOGGING_ENABLED=false`; logs include counts and provider
+metadata only, never prompts or answers. `/chat/ask` retrieval defaults to four
+chunks, while Ollama model keep-alive, context size, and free-text RAG answer
+length are configurable with `CHAT_RAG_TOP_K`, `OLLAMA_KEEP_ALIVE`,
+`OLLAMA_NUM_CTX`, and `RAG_MAX_ANSWER_TOKENS`. See `.env.example` for defaults
+and limits.
+
 The seed script is additive and idempotent: it inserts missing permissions and
 role mappings without deleting existing mappings. It can be safely rerun with
 `python -m app.seed`.
@@ -180,7 +198,9 @@ are introduced.
 ## LangGraph chat orchestration
 
 `POST /chat/ask` remains the chat endpoint and remains stateless. It requires a
-valid JWT and the new `chat:use` permission. Example:
+valid JWT and the new `chat:use` permission. Streamlit displays prior turns but
+sends only the current message; include needed context again in follow-up
+questions. Example:
 
 ```json
 {"message": "What does our travel policy say, and what are my overdue tasks?"}
