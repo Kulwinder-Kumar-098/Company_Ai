@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,3 +41,20 @@ def test_health_endpoint_does_not_require_database_or_llm(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_document_worker_starts_and_stops_with_application(monkeypatch):
+    worker_started = Event()
+    worker_stop_events: list[Event] = []
+
+    def fake_worker(stop_event: Event) -> None:
+        worker_stop_events.append(stop_event)
+        worker_started.set()
+        stop_event.wait()
+
+    monkeypatch.setattr("app.main.run_worker", fake_worker)
+
+    with TestClient(app):
+        assert worker_started.wait(timeout=1)
+
+    assert worker_stop_events[0].is_set()

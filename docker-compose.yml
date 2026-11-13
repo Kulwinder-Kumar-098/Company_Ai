@@ -47,21 +47,6 @@ services:
       - "8501:8501"
     command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: enterprise_ai_worker
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    command: ["python", "-m", "app.workers.document_worker"]
-
 volumes:
   postgres_data:
 

@@ -31,6 +31,9 @@ from app.services.rag_query_service import INSUFFICIENT_CONTEXT_ANSWER
         ("see you!", SmalltalkKind.GOODBYE),
         ("what is your name", SmalltalkKind.IDENTITY),
         ("how can u help me", SmalltalkKind.CAPABILITIES),
+        ("what should u do for me", SmalltalkKind.CAPABILITIES),
+        ("what should you do for me?", SmalltalkKind.CAPABILITIES),
+        ("what can u do for me", SmalltalkKind.CAPABILITIES),
     ],
 )
 def test_classifies_whole_smalltalk_messages(query, kind):

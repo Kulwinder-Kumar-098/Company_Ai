@@ -59,8 +59,10 @@ ollama pull llama3.2:3b
 ```
 
 Uploaded PDF, DOCX, and TXT files are saved under `DOCUMENT_STORAGE_DIR`, then
-enqueued in the database-backed document-processing queue. Apply migrations
-before deploying the API or worker:
+enqueued in the database-backed document-processing queue. The API starts a
+background worker automatically. The upload response may initially show
+`processing_status: "uploaded"`; poll `GET /documents/{id}/status` until it
+shows `ready` with a nonzero `chunk_count`. Apply migrations before deploying:
 
 ```bash
 alembic upgrade head
@@ -68,20 +70,15 @@ alembic upgrade head
 
 The processing-metadata migration clears legacy embeddings and queues existing
 documents so their vectors can be regenerated with model metadata. Ensure the
-configured Ollama embedding model is available, then run a worker separately
-from the API:
-
-```bash
-uv run document-worker
-# or: python -m app.workers.document_worker
-```
+configured embedding service and model are available.
 
 Jobs are committed together with document metadata, claimed with PostgreSQL
 row-level locks, retried with exponential backoff, and recovered after a worker
-crash when its lease expires. Run one or more workers against the same
-PostgreSQL database, document storage, and FAISS index path. For multiple hosts,
-those paths must be shared storage with atomic file replacement and POSIX file
-locking support. Share the FAISS index and its `.metadata.json` sidecar.
+crash when its lease expires. Keep a single API instance unless document storage
+and the FAISS index are on shared, durable storage; multiple instances with
+separate local filesystems cannot process and retrieve the same uploaded
+documents reliably. Render Free filesystems are ephemeral, so uploaded files
+and the FAISS index can be lost on restart or redeploy.
 Configure polling, lease, retry count, backoff, chunk size,
 chunk overlap, and embedding batch/timeout with
 `DOCUMENT_WORKER_POLL_SECONDS`, `DOCUMENT_JOB_LEASE_SECONDS`,
@@ -97,8 +94,7 @@ vectors. The model names can be changed with `EMBEDDING_MODEL` and `LLM_MODEL`;
 changing the embedding model requires re-embedding documents before retrieval.
 Failed processing is reported through the document's `processing_status`; an
 authorized uploader can request reprocessing. Apply the processing-metadata
-migration and run the worker to reprocess existing documents before relying on
-the new embedding metadata/index manifest.
+migration before relying on the new embedding metadata/index manifest.
 
 ## Uploaded document access
 
