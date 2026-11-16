@@ -1,7 +1,6 @@
-from pathlib import Path
-from types import SimpleNamespace
+"""Test for document upload API client."""
 
-from streamlit.testing.v1 import AppTest
+from types import SimpleNamespace
 
 from app.clients import document_api_client
 from app.clients.document_api_client import upload_document
@@ -38,28 +37,3 @@ def test_document_upload_client_sends_bearer_auth_and_multipart(monkeypatch):
         "application/pdf",
     )
     assert observed["data"] == {"access_scope": "private"}
-
-
-def test_authenticated_streamlit_page_renders_document_upload_ui(monkeypatch):
-    monkeypatch.setattr(
-        "requests.get",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
-    )
-    monkeypatch.setattr(
-        document_api_client,
-        "list_documents",
-        lambda *args, **kwargs: [],
-    )
-
-    app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
-    app = AppTest.from_file(str(app_path), default_timeout=10)
-    app.session_state["token"] = "test-token"
-    app.session_state["user_info"] = {"email": "admin@example.test"}
-    app.run()
-
-    assert not app.exception
-    assert app.get("file_uploader")
-    assert any(
-        button.label == "Upload and process"
-        for button in app.button
-    )

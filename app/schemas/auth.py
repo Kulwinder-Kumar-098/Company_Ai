@@ -21,7 +21,8 @@ class EmployeeRegistrationRequest(BaseModel):
     department: str = Field(min_length=1, max_length=100)
     job_title: str | None = Field(default=None, max_length=150)
     password: str = Field(min_length=12, max_length=128)
-    role_id: int = Field(gt=0)
+    role_id: int | None = Field(default=None)
+    role_name: str | None = Field(default=None)
 
     @field_validator("employee_id", "full_name", "department")
     @classmethod

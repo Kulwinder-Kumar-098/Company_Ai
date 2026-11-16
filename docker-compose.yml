@@ -44,8 +44,8 @@ services:
     environment:
       - COMPANY_AI_API_URL=http://api:8000
     ports:
-      - "8501:8501"
-    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+      - "5000:5000"
+    command: ["python", "flask_app.py"]
 
 volumes:
   postgres_data:

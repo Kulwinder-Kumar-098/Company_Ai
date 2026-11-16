@@ -4,7 +4,9 @@
  */
 
 // Dynamically use configured backend URL or current host
-const API_BASE_URL = window.COMPANY_AI_API_URL || "https://company-ai-hha5.onrender.com";
+const API_BASE_URL = (typeof window.COMPANY_AI_API_URL === "string" && window.COMPANY_AI_API_URL.trim() !== "")
+    ? window.COMPANY_AI_API_URL.trim()
+    : "";
 
 // Application State
 const AppState = {
@@ -43,6 +45,11 @@ function initNavigationTabs() {
             // Refresh documents when switching to document tab
             if (target === "tab-documents" && AppState.token) {
                 loadDocumentList();
+            }
+            // Refresh employee roster & roles when switching to employee tab
+            if (target === "tab-register" && AppState.token) {
+                loadRoles();
+                loadEmployeeRoster();
             }
         });
     });
@@ -330,12 +337,19 @@ async function loadDocumentList() {
 }
 
 // ==========================================
-// Employee Registration UI
+// Employee Management UI (Register & Delete)
 // ==========================================
 function initRegistrationUI() {
     const regForm = document.getElementById("employee-registration-form");
     const regAlert = document.getElementById("reg-status-alert");
     const submitBtn = document.getElementById("btn-submit-registration");
+    const refreshRosterBtn = document.getElementById("btn-refresh-roster");
+
+    if (refreshRosterBtn) {
+        refreshRosterBtn.addEventListener("click", () => {
+            loadEmployeeRoster();
+        });
+    }
 
     if (!regForm) return;
 
@@ -348,7 +362,10 @@ function initRegistrationUI() {
         const email = document.getElementById("reg-email").value.trim();
         const dept = document.getElementById("reg-department").value;
         const jobTitle = document.getElementById("reg-job-title").value.trim();
-        const roleId = parseInt(document.getElementById("reg-role").value, 10);
+        const roleSelect = document.getElementById("reg-role");
+        const selectedOpt = roleSelect ? roleSelect.selectedOptions[0] : null;
+        const roleId = selectedOpt ? parseInt(selectedOpt.value, 10) : 4;
+        const roleName = selectedOpt ? (selectedOpt.getAttribute("data-role-name") || selectedOpt.textContent.toLowerCase().trim()) : "employee";
         const password = document.getElementById("reg-password").value;
 
         if (password.length < 12) {
@@ -359,7 +376,18 @@ function initRegistrationUI() {
         try {
             submitBtn.disabled = true;
             submitBtn.textContent = "Registering Employee...";
-            regAlert.style.display = "none";
+            if (regAlert) regAlert.style.display = "none";
+
+            const payload = {
+                employee_id: empId,
+                full_name: fullName,
+                email: email,
+                department: dept,
+                job_title: jobTitle || null,
+                role_id: isNaN(roleId) ? null : roleId,
+                role_name: roleName,
+                password: password
+            };
 
             const res = await fetch(`${API_BASE_URL}/auth/register`, {
                 method: "POST",
@@ -367,23 +395,22 @@ function initRegistrationUI() {
                     "Authorization": `Bearer ${AppState.token}`,
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({
-                    employee_id: empId,
-                    full_name: fullName,
-                    email: email,
-                    department: dept,
-                    job_title: jobTitle || null,
-                    role_id: roleId,
-                    password: password
-                })
+                body: JSON.stringify(payload)
             });
 
             if (res.status === 201) {
                 showAlert(`✅ Employee ${fullName} (${empId}) registered successfully!`, "success");
                 regForm.reset();
+                loadEmployeeRoster();
             } else {
                 const data = await res.json().catch(() => ({}));
-                showAlert(`Registration failed (${res.status}): ${data.detail || "Unable to register employee."}`, "error");
+                let detailText = "Unable to register employee.";
+                if (typeof data.detail === "string") {
+                    detailText = data.detail;
+                } else if (Array.isArray(data.detail)) {
+                    detailText = data.detail.map(d => `${d.loc ? d.loc.slice(1).join('.') + ': ' : ''}${d.msg}`).join(", ");
+                }
+                showAlert(`Registration failed (${res.status}): ${detailText}`, "error");
             }
         } catch (err) {
             showAlert("Failed to connect to backend server.", "error");
@@ -406,6 +433,142 @@ function initRegistrationUI() {
             regAlert.style.border = "1px solid #EF4444";
             regAlert.style.color = "#F87171";
         }
+    }
+}
+
+async function loadRoles() {
+    if (!AppState.token) return;
+    try {
+        const res = await fetch(`${API_BASE_URL}/auth/roles`, {
+            headers: { "Authorization": `Bearer ${AppState.token}` }
+        });
+        if (res.ok) {
+            const roles = await res.json();
+            const roleSelect = document.getElementById("reg-role");
+            if (roleSelect && Array.isArray(roles) && roles.length > 0) {
+                roleSelect.innerHTML = "";
+                roles.forEach(r => {
+                    const opt = document.createElement("option");
+                    opt.value = r.id;
+                    opt.textContent = r.name.charAt(0).toUpperCase() + r.name.slice(1);
+                    opt.setAttribute("data-role-name", r.name.toLowerCase());
+                    roleSelect.appendChild(opt);
+                });
+            }
+        }
+    } catch (err) {
+        console.warn("Could not load roles dynamically, using fallback.");
+    }
+}
+
+async function loadEmployeeRoster() {
+    if (!AppState.token) return;
+    const rosterContainer = document.getElementById("employee-roster-list");
+    if (!rosterContainer) return;
+
+    try {
+        rosterContainer.innerHTML = "<p style='color: #888;'>Loading employee roster...</p>";
+        const res = await fetch(`${API_BASE_URL}/employees`, {
+            headers: { "Authorization": `Bearer ${AppState.token}` }
+        });
+        if (res.ok) {
+            const employees = await res.json();
+            if (!employees || employees.length === 0) {
+                rosterContainer.innerHTML = "<p style='color: #888;'>No employees found.</p>";
+                return;
+            }
+            const role = (AppState.user && (AppState.user.role_name || AppState.user.role || "")).toLowerCase();
+            const isAdmin = (role === "admin");
+
+            let html = `
+            <div style="overflow-x: auto;">
+            <table class="employee-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Department</th>
+                        <th>Job Title</th>
+                        ${isAdmin ? '<th style="text-align: right;">Action</th>' : ''}
+                    </tr>
+                </thead>
+                <tbody>
+            `;
+            employees.forEach(emp => {
+                const isSelf = AppState.user && AppState.user.employee_id === emp.employee_id;
+                html += `
+                    <tr>
+                        <td style="font-weight: 700; color: var(--gold-accent);">${escapeHtml(emp.employee_id)}</td>
+                        <td style="font-weight: 600; color: #F4EEDD;">${escapeHtml(emp.full_name)}</td>
+                        <td style="color: #AAA;">${escapeHtml(emp.email)}</td>
+                        <td>${escapeHtml(emp.department)}</td>
+                        <td>${escapeHtml(emp.job_title || '—')}</td>
+                        ${isAdmin ? `
+                        <td style="text-align: right;">
+                            ${isSelf ? '<span style="color: #666; font-size: 0.8rem;">(You)</span>' : `
+                            <button class="btn-delete-employee" data-emp-id="${escapeHtml(emp.employee_id)}" data-emp-name="${escapeHtml(emp.full_name)}">
+                                🗑️ Delete
+                            </button>
+                            `}
+                        </td>
+                        ` : ''}
+                    </tr>
+                `;
+            });
+            html += `</tbody></table></div>`;
+            rosterContainer.innerHTML = html;
+
+            if (isAdmin) {
+                rosterContainer.querySelectorAll(".btn-delete-employee").forEach(btn => {
+                    btn.addEventListener("click", async () => {
+                        const empId = btn.getAttribute("data-emp-id");
+                        const empName = btn.getAttribute("data-emp-name");
+                        if (!confirm(`Are you sure you want to permanently delete employee ${empName} (${empId})?`)) {
+                            return;
+                        }
+                        await deleteEmployee(empId);
+                    });
+                });
+            }
+        } else {
+            rosterContainer.innerHTML = "<p style='color: #888;'>Unable to fetch employee roster.</p>";
+        }
+    } catch (err) {
+        rosterContainer.innerHTML = "<p style='color: #888;'>Error loading employee records.</p>";
+    }
+}
+
+async function deleteEmployee(employeeId) {
+    const regAlert = document.getElementById("reg-status-alert");
+    try {
+        const res = await fetch(`${API_BASE_URL}/employees/${encodeURIComponent(employeeId)}`, {
+            method: "DELETE",
+            headers: {
+                "Authorization": `Bearer ${AppState.token}`
+            }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            if (regAlert) {
+                regAlert.textContent = `✅ ${data.message || 'Employee removed successfully.'}`;
+                regAlert.style.display = "block";
+                regAlert.style.background = "rgba(16, 185, 129, 0.15)";
+                regAlert.style.border = "1px solid #10B981";
+                regAlert.style.color = "#10B981";
+            }
+            loadEmployeeRoster();
+        } else {
+            if (regAlert) {
+                regAlert.textContent = `Delete failed (${res.status}): ${data.detail || 'Could not delete employee.'}`;
+                regAlert.style.display = "block";
+                regAlert.style.background = "rgba(239, 68, 68, 0.15)";
+                regAlert.style.border = "1px solid #EF4444";
+                regAlert.style.color = "#F87171";
+            }
+        }
+    } catch (err) {
+        alert("Failed to communicate with server.");
     }
 }
 

@@ -18,7 +18,6 @@ ollama
 langgraph>=0.2,<1.0
 groq>=1.7.0
 google-genai>=1.0.0
-streamlit>=1.30.0
 pyjwt
 pwdlib[argon2]
 passlib>=1.7.4
@@ -26,5 +25,4 @@ qdrant-client>=1.13.3
 python-multipart
 python-docx
 requests>=2.31.0
-streamlit>=1.37.0
 flask>=3.0.0

@@ -669,7 +669,7 @@ erDiagram
 
 ## 9. Frontend Application Architecture
 
-The frontend is an interactive single-page application built with Streamlit (`streamlit_app.py`).
+The frontend is an interactive single-page application built with Flask and modern HTML5/Vanilla JavaScript (`flask_app.py`, `templates/index.html`, `static/js/app.js`).
 
 ### 9.1 Visual & UX Design System
 - **Dark Luxury Aesthetic:** Styled with custom CSS utilizing carbon gradients (`#0C0C0E`), warm ambient gold highlights (`#F4EEDD`, `#D4AF37`), and frosted glassmorphic containers (`backdrop-filter: blur(18px)`).
@@ -759,7 +759,7 @@ Every sensitive read, tool execution, credential attempt, and access denial writ
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        CLOUD DEPLOYMENT TOPOLOGY                       │
 ├───────────────────┬────────────────────────────────────────────────────┤
-│ Frontend Web App  │ Streamlit Community Cloud (companyai.streamlit.app)│
+│ Frontend Web App  │ Flask Luxury Dark Interface (`flask_app.py`, Render) │
 │ Backend API       │ Render PaaS Container (company-ai-hha5.onrender.com│
 │ Primary Database  │ Railway Cloud Managed PostgreSQL 16                │
 │ Vector Storage    │ Qdrant Cloud Cluster (sa-east-1 AWS)               │
@@ -769,7 +769,7 @@ Every sensitive read, tool execution, credential attempt, and access denial writ
 ```
 
 ### 11.1 Cloud Services Interconnection
-- **Streamlit Community Cloud (`https://companyai.streamlit.app`):** Hosts the frontend web interface. Reads `COMPANY_AI_API_URL` to route requests to Render.
+- **Flask Web Application (`flask_app.py` / Render):** Serves the responsive, white-labeled luxury dark UI directly or through Render. Communicates with the FastAPI backend via REST.
 - **Render (`https://company-ai-hha5.onrender.com`):** Runs the FastAPI application with automatic Docker container builds from branch `main`. The container exposes port 10000 and runs background ingestion threads.
 - **Railway PostgreSQL:** Managed PostgreSQL database running in Railway Cloud (`metro.proxy.rlwy.net`), connected via SSL pooling.
 - **Qdrant Cloud:** Managed vector cluster in South America (AWS `sa-east-1`), hosting 28 document chunks with 768-dimensional vectors.
@@ -815,7 +815,8 @@ Total Test Suite: 320 Tests | 319 Passed | 1 Skipped | 0 Failures (100% Passing 
 | `test_role_permissions.py` | Database permission mappings and seed consistency | 14 | ✅ Passed |
 | `test_smalltalk.py` | Deterministic replies, injection resistance, fast-path | 31 | ✅ Passed |
 | `test_telemetry_metrics.py`| Telemetry aggregation, latency, sensitive redaction | 7 | ✅ Passed |
-| `test_streamlit_document_upload.py` | Frontend upload forms, multipart encoding, API client | 2 | ✅ Passed |
+| `test_flask_frontend.py` | Flask UI templates, health checks, navigation | 2 | ✅ Passed |
+| `test_employee_deletion.py` | Admin employee deletion, self-deletion prevention, RBAC | 4 | ✅ Passed |
 | *Other Unit Tests* | Database models, migrations, schemas, worker leases | 107 | ✅ Passed |
 
 ### 12.2 RBAC Security Penetration Matrix

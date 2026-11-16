@@ -143,7 +143,13 @@ def register_employee(
         )
 
     # 3. Validate the requested role.
-    role = db.get(Role, employee_data.role_id)
+    role = None
+    if employee_data.role_id is not None:
+        role = db.get(Role, employee_data.role_id)
+    if role is None and employee_data.role_name:
+        role = db.scalar(
+            select(Role).where(func.lower(Role.name) == employee_data.role_name.strip().lower())
+        )
 
     if role is None:
         raise HTTPException(
@@ -180,7 +186,7 @@ def register_employee(
         email=employee_data.email,
         department=employee_data.department,
         job_title=employee_data.job_title,
-        role_id=employee_data.role_id,
+        role_id=role.id,
         is_active=True,
     )
 
@@ -201,7 +207,7 @@ def register_employee(
                 resource_type="employee",
                 resource_id=employee_data.employee_id,
                 outcome="success",
-                details={"role_id": employee_data.role_id},
+                details={"role_id": role.id, "role_name": role.name},
             )
         )
 

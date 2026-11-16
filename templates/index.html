@@ -42,7 +42,7 @@
                     🌐 Platform & Overview
                 </button>
                 <button class="tab-btn" id="tab-btn-register" data-tab="tab-register" style="display: none;">
-                    👥 Employee Registration
+                    👥 Employee Management
                 </button>
             </div>
         </div>
@@ -275,6 +275,21 @@
                         Complete Registration →
                     </button>
                 </form>
+            </div>
+
+            <div class="glass-card" style="max-width: 800px; margin: 2rem auto 0 auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <div>
+                        <h2 class="card-title" style="margin-bottom: 4px;">📋 Corporate Employee Directory</h2>
+                        <p class="card-desc" style="margin-bottom: 0;">Active company staff roster. Administrators can remove employee records.</p>
+                    </div>
+                    <button id="btn-refresh-roster" class="chip-btn" style="padding: 6px 14px; font-size: 0.8rem;">
+                        🔄 Refresh
+                    </button>
+                </div>
+                <div id="employee-roster-list">
+                    <p style="color: #888;">Loading employee roster...</p>
+                </div>
             </div>
         </section>
     </main>
