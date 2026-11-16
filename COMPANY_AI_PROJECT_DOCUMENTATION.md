@@ -666,7 +666,7 @@ The frontend is an interactive single-page application built with Streamlit (`st
 
 #### 1. Unauthenticated Landing View
 When no JWT session is present, the application renders a public landing page:
-- **Hero Banner:** Displays **BUILD THE AGENT / OWN THE FUTURE** with active telemetry badges (`12 TASKS RUNNING AUTOMATICALLY`, `+38.4% PRODUCTIVITY GAINED`).
+- **Hero Banner:** Displays **BUILD THE AGENT / OWN THE FUTURE** headline with enterprise value proposition and availability status pill.
 - **Secure Sign-In Form:** Collects corporate email and password, submitting directly to `/auth/login` to obtain an access token.
 
 #### 2. AI Assistant Workspace (`💬`)

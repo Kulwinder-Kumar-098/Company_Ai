@@ -400,24 +400,6 @@ with tab_assistant:
                 unsafe_allow_html=True,
             )
 
-            # Quick stats row
-            s1, s2 = st.columns(2)
-            with s1:
-                st.markdown("""
-                <div class="telemetry-card">
-                    <div style="font-size:1.5rem; font-family:'Syne',sans-serif; color:#F4EEDD; font-weight:800; margin-bottom:4px;">12 TASKS</div>
-                    <div style="font-size:0.75rem; color:#888;">Running automatically</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with s2:
-                st.markdown("""
-                <div class="telemetry-card">
-                    <div style="font-size:0.75rem; color:#888; font-weight:600; text-transform:uppercase;">BUSINESS GROWTH</div>
-                    <div style="font-size:1.5rem; font-family:'Syne',sans-serif; color:#F4EEDD; font-weight:800; margin:4px 0;">+38.4%</div>
-                    <div style="font-size:0.75rem; color:#888;">Productivity gained</div>
-                </div>
-                """, unsafe_allow_html=True)
-
         with hero_right:
             with st.container(border=True):
                 st.markdown("### 🔐 Employee Sign In")
