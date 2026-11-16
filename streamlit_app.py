@@ -206,27 +206,56 @@ st.markdown("""
         box-shadow: 0 0 0 1px #E2DAC5 !important;
     }
 
-    /* Tabs Styling */
+    /* Tabs Styling - Centered Navigation Panel */
+    .stTabs {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+    }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 12px;
-        background: rgba(14, 14, 18, 0.6);
-        padding: 6px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        gap: 16px !important;
+        background: rgba(18, 18, 24, 0.85) !important;
+        padding: 8px 18px !important;
+        border-radius: 9999px !important;
+        border: 1px solid rgba(244, 238, 221, 0.16) !important;
+        margin: 0.5rem auto 2.2rem auto !important;
+        width: fit-content !important;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6) !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        width: 100% !important;
+    }
+    .stTabs [data-baseweb="tab-border"] {
+        display: none !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        background-color: transparent !important;
     }
     .stTabs [data-baseweb="tab"] {
-        color: #9C9CA4 !important;
+        color: #A0A0A8 !important;
+        font-family: 'Space Grotesk', sans-serif !important;
         font-weight: 600 !important;
         text-transform: uppercase !important;
         font-size: 0.85rem !important;
-        letter-spacing: 0.05em !important;
-        border-radius: 8px !important;
-        padding: 8px 20px !important;
+        letter-spacing: 0.06em !important;
+        border-radius: 9999px !important;
+        padding: 8px 22px !important;
+        border: none !important;
+        background: transparent !important;
+        transition: all 0.25s ease !important;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #F4EEDD !important;
+        background: rgba(244, 238, 221, 0.06) !important;
     }
     .stTabs [aria-selected="true"] {
-        background: rgba(244, 238, 221, 0.12) !important;
+        background: rgba(244, 238, 221, 0.14) !important;
         color: #F4EEDD !important;
-        border-bottom: 2px solid #E2DAC5 !important;
+        border: 1px solid rgba(244, 238, 221, 0.25) !important;
+        box-shadow: 0 4px 16px rgba(244, 238, 221, 0.08) !important;
     }
 
     /* Chat Messages */
