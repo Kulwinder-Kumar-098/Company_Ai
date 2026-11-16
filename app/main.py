@@ -2,10 +2,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 from threading import Event, Thread
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import httpx
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -86,6 +89,23 @@ app.include_router(employee_router)
 app.include_router(project_router)
 app.include_router(tool_router)
 app.include_router(observability_router)
+
+# Mount static assets if directory exists
+static_dir = Path("static")
+if static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    template_path = Path("templates/index.html")
+    if template_path.is_file():
+        content = template_path.read_text(encoding="utf-8")
+        # In unified Render deployment, relative API calls are used directly
+        content = content.replace("{{ api_base_url }}", "")
+        return HTMLResponse(content=content)
+    return HTMLResponse("<h1>Enterprise AI API Gateway</h1>")
+
 
 @app.get("/health")
 def health():

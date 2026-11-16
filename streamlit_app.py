@@ -19,7 +19,7 @@ from app.clients.document_api_client import (
 API_BASE_URL = os.getenv("COMPANY_AI_API_URL", "https://company-ai-hha5.onrender.com")
 
 st.set_page_config(
-    page_title="COMPANY AI — Enterprise Autonomous Agent",
+    page_title="ENTERPRISE AI — Autonomous Enterprise Intelligence",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -357,7 +357,7 @@ def handle_document_api_error(error: DocumentAPIError) -> None:
 # Top Navigation Bar
 top_col1, top_col2, top_col3 = st.columns([4, 3, 3])
 with top_col1:
-    st.markdown('<div class="brand-logo">COMPANY&nbsp;AI</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-logo">ENTERPRISE&nbsp;AI</div>', unsafe_allow_html=True)
 with top_col2:
     pass
 with top_col3:
@@ -645,8 +645,8 @@ with tab_overview:
 
     st.markdown("<br><br>", unsafe_allow_html=True)
 
-    # Live Health & Telemetry Check
-    st.markdown("### 🖥️ Live Infrastructure Telemetry")
+    # Live Infrastructure Status (Executive View)
+    st.markdown("### 🖥️ Enterprise Infrastructure Status")
     t1, t2, t3, t4 = st.columns(4)
     with t1:
         try:
@@ -654,15 +654,20 @@ with tab_overview:
             stat = "ONLINE" if r.status_code == 200 else "OFFLINE"
         except Exception:
             stat = "OFFLINE"
-        st.metric("FastAPI Backend", stat, "Render Cloud")
+        st.metric("FastAPI Gateway", stat, "Render Cloud")
 
     with t2:
-        st.metric("Vector Database", "Qdrant Cloud", "28 Chunks Active")
+        st.metric("Vector Database", "CONNECTED", "Qdrant Cloud")
 
     with t3:
-        st.metric("Relational Database", "PostgreSQL", "Railway Connected")
+        st.metric("Relational Database", "CONNECTED", "Railway Cloud")
 
     with t4:
-        st.metric("Inference Engine", "Ollama + Groq", "Llama 3.2 + GPT-OSS")
+        st.metric("Inference Engine", "READY", "Ollama + Groq")
 
-    st.markdown('<div class="brand-watermark">COMPANY AI</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-watermark">ENTERPRISE AI</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align: center; margin-top: 2rem; color: #888; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em;">
+        ENTERPRISE AI &bull; Created by <span style="color: #E2DAC5; font-weight: 600;">Immanent Solutions</span>
+    </div>
+    """, unsafe_allow_html=True)

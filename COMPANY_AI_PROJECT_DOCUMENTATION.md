@@ -1,8 +1,7 @@
-# COMPANY AI — Comprehensive Technical & Functional Documentation
+# ENTERPRISE AI — Comprehensive Technical & Functional Documentation
 
-**Project Name:** Company AI (Enterprise Role-Based AI Assistant)  
-**Live Production URL:** [https://companyai.streamlit.app/](https://companyai.streamlit.app/)  
-**Source Repository:** [https://github.com/Kulwinder-Kumar-098/Company_Ai](https://github.com/Kulwinder-Kumar-098/Company_Ai)  
+**Project Name:** Enterprise AI (Autonomous Enterprise Role-Based AI Assistant)  
+<!-- **Source Repository:** Confidential Enterprise Repository -->
 **Documentation Version:** 1.0.0 (Production Verified)  
 **Verification Date:** November 2026  
 
@@ -29,10 +28,10 @@
 
 ## 1. Project Overview
 
-### 1.1 What is Company AI?
-**Company AI** is a secure, role-governed enterprise AI platform that synthesizes corporate intelligence from unstructured company policies (PDFs, DOCX, TXT) and structured transactional databases (employees, projects, tasks, departments, performance metrics). 
+### 1.1 What is Enterprise AI?
+**Enterprise AI** is a secure, role-governed enterprise AI platform that synthesizes corporate intelligence from unstructured company policies (PDFs, DOCX, TXT) and structured transactional databases (employees, projects, tasks, departments, performance metrics). 
 
-Unlike public consumer LLMs, Company AI is designed with **zero-trust enterprise boundaries**: every single query, tool execution, and document chunk retrieval is strictly evaluated against the caller's cryptographically authenticated identity and authorized enterprise role.
+Unlike public consumer LLMs, Enterprise AI is designed with **zero-trust enterprise boundaries**: every single query, tool execution, and document chunk retrieval is strictly evaluated against the caller's cryptographically authenticated identity and authorized enterprise role.
 
 ### 1.2 The Problem It Solves
 Modern enterprises suffer from fragmented knowledge silos and severe data governance risks:
@@ -943,3 +942,4 @@ Company AI represents a production-grade enterprise AI architecture. By combinin
 
 ---
 *End of Technical Documentation — COMPANY AI ENTERPRISE AGENT*
+
