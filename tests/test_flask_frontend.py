@@ -24,3 +24,4 @@ def test_flask_health_check():
     data = response.get_json()
     assert data["status"] == "ok"
     assert data["service"] == "enterprise-ai-frontend"
+

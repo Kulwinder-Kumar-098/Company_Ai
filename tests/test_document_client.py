@@ -37,3 +37,4 @@ def test_document_upload_client_sends_bearer_auth_and_multipart(monkeypatch):
         "application/pdf",
     )
     assert observed["data"] == {"access_scope": "private"}
+

@@ -128,7 +128,7 @@ function initAuthUI() {
                     AppState.user = data.user || { email: emailInput.value };
                     localStorage.setItem("enterprise_ai_token", AppState.token);
                     localStorage.setItem("enterprise_ai_user", JSON.stringify(AppState.user));
-                    renderAuthState();
+                    window.location.href = "/";
                 } else {
                     const err = await res.json();
                     if (errorMsg) errorMsg.textContent = err.detail || "Authentication failed.";
@@ -143,13 +143,14 @@ function initAuthUI() {
     }
 
     if (signoutBtn) {
-        signoutBtn.addEventListener("click", () => {
+        signoutBtn.addEventListener("click", (e) => {
+            if (e) e.preventDefault();
             AppState.token = null;
             AppState.user = null;
             AppState.messages = [];
             localStorage.removeItem("enterprise_ai_token");
             localStorage.removeItem("enterprise_ai_user");
-            renderAuthState();
+            window.location.href = "/";
         });
     }
 
@@ -165,6 +166,10 @@ function initChatUI() {
     const chatMessages = document.getElementById("chat-messages");
     const clearChatBtn = document.getElementById("btn-clear-chat");
     const promptChips = document.querySelectorAll(".chip-btn");
+
+    if (chatInput && AppState.token) {
+        setTimeout(() => chatInput.focus(), 150);
+    }
 
     function appendMessage(role, content, sources = null) {
         if (!chatMessages) return;
@@ -185,7 +190,11 @@ function initChatUI() {
     }
 
     async function sendQuery(text) {
-        if (!text || !text.trim() || !AppState.token) return;
+        if (!text || !text.trim()) return;
+        if (!AppState.token) {
+            appendMessage("assistant", "Please sign in with your corporate account to ask questions.");
+            return;
+        }
         appendMessage("user", text);
 
         // Thinking placeholder
