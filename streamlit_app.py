@@ -326,11 +326,11 @@ def handle_document_api_error(error: DocumentAPIError) -> None:
 
 
 # Top Navigation Bar
-top_col1, top_col2, top_col3 = st.columns([2, 5, 3])
+top_col1, top_col2, top_col3 = st.columns([4, 3, 3])
 with top_col1:
     st.markdown('<div class="brand-logo">COMPANY&nbsp;AI</div>', unsafe_allow_html=True)
 with top_col2:
-    st.caption(f"Connected to Enterprise Cluster: `{API_BASE_URL}`")
+    pass
 with top_col3:
     if st.session_state.token:
         user = st.session_state.user_info
@@ -376,8 +376,7 @@ with tab_assistant:
             with s1:
                 st.markdown("""
                 <div class="telemetry-card">
-                    <div style="font-size:0.75rem; color:#10B981; font-weight:700;">🟢 ONLINE &bull; 99.8% UPTIME</div>
-                    <div style="font-size:1.5rem; font-family:'Syne',sans-serif; color:#F4EEDD; font-weight:800; margin:4px 0;">12 TASKS</div>
+                    <div style="font-size:1.5rem; font-family:'Syne',sans-serif; color:#F4EEDD; font-weight:800; margin-bottom:4px;">12 TASKS</div>
                     <div style="font-size:0.75rem; color:#888;">Running automatically</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -401,15 +400,6 @@ with tab_assistant:
                         login(in_email, in_pass)
                     else:
                         st.warning("Please provide both email and password.")
-
-                with st.expander("💡 Test Accounts (Click to view credentials)"):
-                    st.markdown("""
-                    - **Admin:** `aarav.sharma@example.com`
-                    - **HR:** `ananya.verma@example.com`
-                    - **Manager:** `priya.rao@example.com`
-                    - **Employee:** `neha.iyer@example.com`
-                    *(Password as configured during system provisioning)*
-                    """)
 
     else:
         # Authenticated Chat Interface
