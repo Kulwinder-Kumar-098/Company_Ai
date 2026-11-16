@@ -38,12 +38,36 @@ class RequestPlan(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     answer: str = Field(
         min_length=1,
         max_length=MAX_FINAL_ANSWER_CHARACTERS,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_answer(cls, data: object) -> object:
+        if isinstance(data, dict):
+            if "answer" not in data or not str(data.get("answer", "")).strip():
+                for alt_key in (
+                    "response",
+                    "result",
+                    "output",
+                    "text",
+                    "summary",
+                    "message",
+                ):
+                    if alt_key in data and str(data[alt_key]).strip():
+                        return {"answer": str(data[alt_key]).strip()}
+                parts = [
+                    f"{str(k).replace('_', ' ').title()}: {v}"
+                    for k, v in data.items()
+                    if v is not None and not isinstance(v, (dict, list))
+                ]
+                if parts:
+                    return {"answer": ", ".join(parts)}
+        return data
 
 
 @dataclass(frozen=True)
