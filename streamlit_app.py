@@ -377,11 +377,24 @@ with top_col3:
 st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 0.5rem 0 1.5rem 0;'>", unsafe_allow_html=True)
 
 # Navigation Tabs
-tab_assistant, tab_documents, tab_overview = st.tabs([
-    "💬 AI Assistant Workspace",
-    "📂 Document Knowledge Base",
-    "🌐 Platform & Telemetry",
-])
+user_info = st.session_state.user_info or {}
+user_role = (user_info.get("role_name") or user_info.get("role") or "").lower()
+can_register = bool(st.session_state.token and user_role in ("admin", "hr"))
+
+if can_register:
+    tab_assistant, tab_documents, tab_overview, tab_register = st.tabs([
+        "💬 AI Assistant Workspace",
+        "📂 Document Knowledge Base",
+        "🌐 Platform & Telemetry",
+        "👥 Employee Registration",
+    ])
+else:
+    tab_assistant, tab_documents, tab_overview = st.tabs([
+        "💬 AI Assistant Workspace",
+        "📂 Document Knowledge Base",
+        "🌐 Platform & Telemetry",
+    ])
+    tab_register = None
 
 
 # ==========================================
@@ -653,3 +666,62 @@ with tab_overview:
         ENTERPRISE AI &bull; Created by <span style="color: #E2DAC5; font-weight: 600;">Immanent Solutions</span>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ==========================================
+# TAB 4: Employee Registration (Admin / HR)
+# ==========================================
+if tab_register is not None:
+    with tab_register:
+        st.markdown("### 👥 Register New Employee")
+        st.caption("Authorized HR & System Administrator portal for corporate onboarding.")
+
+        with st.form("employee_registration_form"):
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                new_emp_id = st.text_input("Employee ID *", placeholder="e.g. EMP050")
+                new_name = st.text_input("Full Name *", placeholder="e.g. Robin Sharma")
+                new_email = st.text_input("Corporate Email *", placeholder="e.g. robin.sharma@example.com")
+                new_dept = st.selectbox("Department *", [
+                    "Engineering", "AI/ML", "Human Resources", "Project Management",
+                    "Finance", "IT Operations", "Executive"
+                ])
+            with col_r2:
+                new_title = st.text_input("Job Title", placeholder="e.g. Senior ML Engineer")
+                new_password = st.text_input("Temporary Password * (Min 12 chars)", type="password", placeholder="At least 12 characters")
+                if user_role == "admin":
+                    role_options = {"Employee": 4, "Manager": 3, "HR": 2, "Admin": 1}
+                else:
+                    role_options = {"Employee": 4}
+                selected_role_label = st.selectbox("Assign Role *", list(role_options.keys()))
+                selected_role_id = role_options[selected_role_label]
+
+            submitted = st.form_submit_button("Complete Registration →", use_container_width=True)
+            if submitted:
+                if not new_emp_id or not new_name or not new_email or not new_password:
+                    st.error("Please fill in all required fields.")
+                elif len(new_password) < 12:
+                    st.error("Password must be at least 12 characters long.")
+                else:
+                    headers = {
+                        "Authorization": f"Bearer {st.session_state.token}",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "employee_id": new_emp_id.strip(),
+                        "full_name": new_name.strip(),
+                        "email": new_email.strip(),
+                        "department": new_dept,
+                        "job_title": new_title.strip() if new_title else None,
+                        "password": new_password,
+                        "role_id": selected_role_id,
+                    }
+                    try:
+                        res = requests.post(f"{API_BASE_URL}/auth/register", json=payload, headers=headers, timeout=20)
+                        if res.status_code == 201:
+                            st.success(f"✅ Employee {new_name} ({new_emp_id}) successfully registered with role '{selected_role_label}'!")
+                        else:
+                            detail = res.json().get("detail", res.text)
+                            st.error(f"Registration failed ({res.status_code}): {detail}")
+                    except Exception as e:
+                        st.error(f"Error connecting to backend: {e}")

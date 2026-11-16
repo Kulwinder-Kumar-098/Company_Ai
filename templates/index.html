@@ -41,6 +41,9 @@
                 <button class="tab-btn" data-tab="tab-overview">
                     🌐 Platform & Overview
                 </button>
+                <button class="tab-btn" id="tab-btn-register" data-tab="tab-register" style="display: none;">
+                    👥 Employee Registration
+                </button>
             </div>
         </div>
 
@@ -203,6 +206,75 @@
                     <div class="telemetry-value" style="font-size: 1.2rem; color: #10B981;">● READY</div>
                     <div class="telemetry-label">Inference Engine</div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ========================================== -->
+        <!-- TAB 4: Employee Registration (Admin / HR)  -->
+        <!-- ========================================== -->
+        <section id="tab-register" class="tab-content">
+            <div class="glass-card" style="max-width: 680px; margin: 0 auto;">
+                <h2 class="card-title">👥 Register New Employee</h2>
+                <p class="card-desc">Authorized Admin & HR portal to onboard employees into the corporate directory.</p>
+                
+                <div id="reg-status-alert" style="display: none; padding: 12px 16px; border-radius: 8px; margin-bottom: 1.2rem; font-size: 0.9rem;"></div>
+
+                <form id="employee-registration-form">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group">
+                            <label class="form-label" for="reg-emp-id">Employee ID *</label>
+                            <input type="text" id="reg-emp-id" class="form-input" placeholder="e.g. EMP050" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="reg-full-name">Full Name *</label>
+                            <input type="text" id="reg-full-name" class="form-input" placeholder="e.g. Robin Sharma" required>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group">
+                            <label class="form-label" for="reg-email">Corporate Email *</label>
+                            <input type="email" id="reg-email" class="form-input" placeholder="user@company.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="reg-department">Department *</label>
+                            <select id="reg-department" class="form-input" required>
+                                <option value="Engineering">Engineering</option>
+                                <option value="AI/ML">AI/ML</option>
+                                <option value="Human Resources">Human Resources</option>
+                                <option value="Project Management">Project Management</option>
+                                <option value="Finance">Finance</option>
+                                <option value="IT Operations">IT Operations</option>
+                                <option value="Executive">Executive</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group">
+                            <label class="form-label" for="reg-job-title">Job Title</label>
+                            <input type="text" id="reg-job-title" class="form-input" placeholder="e.g. Senior ML Engineer">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="reg-role">Assign Role *</label>
+                            <select id="reg-role" class="form-input" required>
+                                <option value="4">Employee</option>
+                                <option value="3" class="admin-only-role">Manager</option>
+                                <option value="2" class="admin-only-role">HR</option>
+                                <option value="1" class="admin-only-role">Admin</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label class="form-label" for="reg-password">Temporary Password * (Min 12 chars)</label>
+                        <input type="password" id="reg-password" class="form-input" placeholder="At least 12 characters" required minlength="12">
+                    </div>
+
+                    <button type="submit" id="btn-submit-registration" class="btn-primary">
+                        Complete Registration →
+                    </button>
+                </form>
             </div>
         </section>
     </main>

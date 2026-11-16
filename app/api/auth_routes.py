@@ -92,7 +92,16 @@ def login(
     # 5. Generate the access token.
     token = create_access_token(employee.employee_id)
 
-    return TokenResponse(access_token=token)
+    user_payload = {
+        "employee_id": employee.employee_id,
+        "email": employee.email,
+        "full_name": employee.full_name,
+        "department": employee.department,
+        "job_title": employee.job_title,
+        "role": employee.role.name if employee.role else "employee",
+        "role_name": employee.role.name if employee.role else "employee",
+    }
+    return TokenResponse(access_token=token, user=user_payload)
 
 
 @router.post(
@@ -208,3 +217,31 @@ def register_employee(
         )
 
     return employee
+
+
+@router.get("/roles")
+def list_available_roles(
+    current_user: Employee = Depends(require_permission("employees:create")),
+    db: Session = Depends(get_db),
+):
+    can_assign_privileged = has_permission(db, current_user, "employees:assign:privileged")
+    statement = select(Role)
+    if not can_assign_privileged:
+        statement = statement.where(Role.name == "employee")
+    roles = db.scalars(statement.order_by(Role.id)).all()
+    return [{"id": r.id, "name": r.name, "description": r.description} for r in roles]
+
+
+@router.get("/me")
+def get_current_user_profile(
+    current_user: Employee = Depends(require_permission("chat:use")),
+):
+    return {
+        "employee_id": current_user.employee_id,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "department": current_user.department,
+        "job_title": current_user.job_title,
+        "role": current_user.role.name if current_user.role else "employee",
+        "role_name": current_user.role.name if current_user.role else "employee",
+    }

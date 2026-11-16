@@ -19,6 +19,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initAuthUI();
     initChatUI();
     initDocumentUI();
+    initRegistrationUI();
 });
 
 // ==========================================
@@ -60,17 +61,31 @@ function initAuthUI() {
     const userRoleSpan = document.getElementById("user-role");
 
     function renderAuthState() {
+        const tabBtnRegister = document.getElementById("tab-btn-register");
+        const role = (AppState.user && (AppState.user.role_name || AppState.user.role || "")).toLowerCase();
+        const canRegister = (role === "admin" || role === "hr");
+
         if (AppState.token && AppState.user) {
             if (unauthView) unauthView.style.display = "none";
             if (authView) authView.style.display = "block";
             if (userBadge) userBadge.style.display = "flex";
             if (userNameSpan) userNameSpan.textContent = AppState.user.full_name || AppState.user.email || "Employee";
             if (userRoleSpan) userRoleSpan.textContent = (AppState.user.role_name || AppState.user.role || "USER").toUpperCase();
+            if (tabBtnRegister) tabBtnRegister.style.display = canRegister ? "inline-flex" : "none";
         } else {
             if (unauthView) unauthView.style.display = "grid";
             if (authView) authView.style.display = "none";
             if (userBadge) userBadge.style.display = "none";
+            if (tabBtnRegister) tabBtnRegister.style.display = "none";
         }
+
+        // Configure role select options based on whether caller is Admin or HR
+        const adminRoleOptions = document.querySelectorAll(".admin-only-role");
+        adminRoleOptions.forEach(opt => {
+            opt.style.display = (role === "admin") ? "block" : "none";
+            if (role !== "admin") opt.disabled = true;
+            else opt.disabled = false;
+        });
     }
 
     if (loginForm) {
@@ -311,6 +326,86 @@ async function loadDocumentList() {
         }
     } catch (err) {
         listContainer.innerHTML = "<p style='color: #888;'>Unable to fetch document roster.</p>";
+    }
+}
+
+// ==========================================
+// Employee Registration UI
+// ==========================================
+function initRegistrationUI() {
+    const regForm = document.getElementById("employee-registration-form");
+    const regAlert = document.getElementById("reg-status-alert");
+    const submitBtn = document.getElementById("btn-submit-registration");
+
+    if (!regForm) return;
+
+    regForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!AppState.token) return;
+
+        const empId = document.getElementById("reg-emp-id").value.trim();
+        const fullName = document.getElementById("reg-full-name").value.trim();
+        const email = document.getElementById("reg-email").value.trim();
+        const dept = document.getElementById("reg-department").value;
+        const jobTitle = document.getElementById("reg-job-title").value.trim();
+        const roleId = parseInt(document.getElementById("reg-role").value, 10);
+        const password = document.getElementById("reg-password").value;
+
+        if (password.length < 12) {
+            showAlert("Password must be at least 12 characters long.", "error");
+            return;
+        }
+
+        try {
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Registering Employee...";
+            regAlert.style.display = "none";
+
+            const res = await fetch(`${API_BASE_URL}/auth/register`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${AppState.token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    employee_id: empId,
+                    full_name: fullName,
+                    email: email,
+                    department: dept,
+                    job_title: jobTitle || null,
+                    role_id: roleId,
+                    password: password
+                })
+            });
+
+            if (res.status === 201) {
+                showAlert(`✅ Employee ${fullName} (${empId}) registered successfully!`, "success");
+                regForm.reset();
+            } else {
+                const data = await res.json().catch(() => ({}));
+                showAlert(`Registration failed (${res.status}): ${data.detail || "Unable to register employee."}`, "error");
+            }
+        } catch (err) {
+            showAlert("Failed to connect to backend server.", "error");
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Complete Registration →";
+        }
+    });
+
+    function showAlert(msg, type) {
+        if (!regAlert) return;
+        regAlert.textContent = msg;
+        regAlert.style.display = "block";
+        if (type === "success") {
+            regAlert.style.background = "rgba(16, 185, 129, 0.15)";
+            regAlert.style.border = "1px solid #10B981";
+            regAlert.style.color = "#10B981";
+        } else {
+            regAlert.style.background = "rgba(239, 68, 68, 0.15)";
+            regAlert.style.border = "1px solid #EF4444";
+            regAlert.style.color = "#F87171";
+        }
     }
 }
 
