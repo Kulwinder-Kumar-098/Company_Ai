@@ -45,6 +45,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     worker_thread.start()
     logger.info("Started document processing worker.")
+
+    # Auto-initialize vector store index from database chunks if missing on disk
+    try:
+        store = get_document_vector_store()
+        if not store.is_available():
+            logger.info("Vector store index is not initialized. Auto-rebuilding from database...")
+            from app.core.database import SessionLocal
+            from app.services.document_indexing_service import rebuild_document_vector_index
+            with SessionLocal() as db:
+                rebuild_document_vector_index(db)
+            logger.info("Vector store index successfully initialized.")
+    except Exception as exc:
+        logger.warning("Could not auto-initialize vector store index on startup: %s", exc)
+
     try:
         yield
     finally:

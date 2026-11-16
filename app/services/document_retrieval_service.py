@@ -55,9 +55,16 @@ def retrieve_document_chunks(
             "The authorized document index is not available."
         ) from exc
     if not index_available:
-        raise VectorIndexUnavailableError(
-            "The authorized document index is not available."
-        )
+        try:
+            from app.services.document_indexing_service import rebuild_document_vector_index
+            rebuild_document_vector_index(db)
+            index_available = index.is_available()
+        except Exception:
+            pass
+        if not index_available:
+            raise VectorIndexUnavailableError(
+                "The authorized document index is not available."
+            )
 
     query_embedding = embed_texts([query])[0]
     try:
