@@ -29,6 +29,13 @@ Rules:
 - For employee directory, listing, or employee records inquiries (e.g. "show all employees",
   "list employees", "who works here", "data of employees", "search employees"),
   select search_employees.
+- For headcount, counting employees, team size, staff count, or role numbers (e.g.
+  "how many hr in our company", "how many human resource employees", "how many ai engineers in our company",
+  "how many employees in engineering", "total number of employees", "what is our headcount",
+  "how many people work here"), select get_employee_count with matching department, role, or job_title arguments.
+  Never route employee headcount or staff count questions to RAG.
+- For listing projects or viewing company projects (e.g. "list all projects", "what projects are running"),
+  select list_projects.
 - For queries asking about the current user's role, status, profile, or details in the company
   (e.g. "what is my role", "my status in company", "show my profile"), select get_employee_details.
 - Choose unsupported if required tool arguments cannot be inferred from the
@@ -43,6 +50,10 @@ Rules:
 
 Examples:
 - "Where can I find the travel reimbursement rules?" -> rag, no tools.
+- "How many HR in our company?" -> structured, get_employee_count(department="Human Resources").
+- "How many AI engineers in our company?" -> structured, get_employee_count(job_title="AI Engineer").
+- "What is the total headcount of our company?" -> structured, get_employee_count().
+- "Show all active company projects." -> structured, list_projects(status="active").
 - "Show the status of project P-204." -> structured,
   get_project_status(project_id="P-204").
 - "Summarize the remote-work policy and list my late assignments." -> mixed,

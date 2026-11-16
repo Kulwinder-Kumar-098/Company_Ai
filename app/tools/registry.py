@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.models.employee import Employee
 from app.schemas.tools import (
+    EmployeeCountData,
+    EmployeeCountInput,
     EmployeeData,
     EmployeeSearchInput,
     EmployeeTasksInput,
@@ -18,6 +20,7 @@ from app.schemas.tools import (
     PerformanceMetricsInput,
     PerformanceSummaryData,
     ProjectData,
+    ProjectListInput,
     ProjectStatusData,
     ProjectTaskInput,
     ProjectTeamInput,
@@ -30,6 +33,7 @@ from app.schemas.tools import (
 )
 from app.tools.hr_tools import (
     get_department_performance_summary,
+    get_employee_count,
     get_employee_details,
     get_employee_performance_metrics,
     get_employee_performance_summary,
@@ -42,6 +46,7 @@ from app.tools.project_tools import (
     get_project_status,
     get_project_tasks,
     get_project_team,
+    list_projects,
 )
 from app.tools.technical_tools import (
     get_overdue_tasks,
@@ -93,6 +98,14 @@ TOOLS: dict[str, ToolDefinition] = {
             search_employees,
         ),
         ToolDefinition(
+            "get_employee_count",
+            "Get employee headcount, counting total employees or filtering by department, role, or job title. "
+            "Returns total count and departmental breakdown.",
+            EmployeeCountInput,
+            ToolResult[EmployeeCountData],
+            get_employee_count,
+        ),
+        ToolDefinition(
             "get_employee_tasks",
             "List tasks assigned to an employee, subject to employee and task scope.",
             EmployeeTasksInput,
@@ -138,6 +151,13 @@ TOOLS: dict[str, ToolDefinition] = {
             ProjectToolInput,
             ToolResult[ProjectData],
             get_project_details,
+        ),
+        ToolDefinition(
+            "list_projects",
+            "List company projects visible to the authenticated actor, optionally filtered by status.",
+            ProjectListInput,
+            ToolResult[list[ProjectData]],
+            list_projects,
         ),
         ToolDefinition(
             "get_project_status",

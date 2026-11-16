@@ -29,12 +29,14 @@ from app.models import (
     Task,
 )
 from app.schemas.tools import (
+    EmployeeCountInput,
     EmployeeSearchInput,
     EmployeeTasksInput,
     EmployeeToolInput,
     OverdueTasksInput,
     PerformanceDepartmentInput,
     PerformanceMetricsInput,
+    ProjectListInput,
     ProjectTaskInput,
     ProjectTeamInput,
     ProjectToolInput,
@@ -43,6 +45,7 @@ from app.schemas.tools import (
 )
 from app.tools.hr_tools import (
     get_department_performance_summary,
+    get_employee_count,
     get_employee_details,
     get_employee_performance_metrics,
     get_employee_performance_summary,
@@ -53,6 +56,7 @@ from app.tools.project_tools import (
     get_project_details,
     get_project_tasks,
     get_project_team,
+    list_projects,
 )
 from app.tools.registry import TOOLS, ToolArgumentsError, execute_tool
 from app.tools.technical_tools import (
@@ -1422,3 +1426,29 @@ def test_agent_graph_bounds_tool_calls_and_sanitizes_tool_failures(
     )
     assert failed_result["answer"] == orchestrator.TOOL_FAILURE_ANSWER
     assert prompt_values == []
+
+
+def test_get_employee_count_and_list_projects(tool_db):
+    db, employees = tool_db
+
+    # Total headcount
+    total_res = get_employee_count(db, employees["ADMIN"], EmployeeCountInput())
+    assert total_res.status == "ok"
+    assert total_res.data.total_count == 7
+    assert len(total_res.data.breakdown_by_department) > 0
+
+    # Department filter: engineering
+    eng_res = get_employee_count(db, employees["ADMIN"], EmployeeCountInput(department="engineering"))
+    assert eng_res.status == "ok"
+    assert eng_res.data.total_count == 2
+    assert eng_res.data.filter_department == "engineering"
+
+    # Job title filter: Engineer
+    title_res = get_employee_count(db, employees["HR"], EmployeeCountInput(job_title="Engineer"))
+    assert title_res.status == "ok"
+    assert title_res.data.total_count == 7
+
+    # List projects
+    projects_res = list_projects(db, employees["ADMIN"], ProjectListInput())
+    assert projects_res.status == "ok"
+    assert len(projects_res.data) >= 1

@@ -414,15 +414,29 @@ All tools are registered in `app/tools/registry.py` and run within the caller's 
 - **Access Boundary:** Standard employees can only view their own profile. HR and Admin can view any profile.
 
 #### 2. `search_employees`
-- **Purpose:** Search and list employees matching text queries or department filters.
+- **Purpose:** Search and list employees matching text queries, job titles, or department filters.
 - **Arguments:** `query: str | None`, `department: str | None`, `limit: int = 25`, `offset: int = 0`
 - **Output:** `ToolResult[list[EmployeeData]]`
 - **Required Permission:** `employees:read`
 - **Access Boundary:** Admin and HR see all company employees. Managers and Employees see active employees within their accessible scope.
 
+#### 3. `get_employee_count`
+- **Purpose:** Calculate headcount, employee counts, and organizational breakdowns filtered by department, job title, or role.
+- **Arguments:** `department: str | None`, `role: str | None`, `job_title: str | None`
+- **Output:** `ToolResult[EmployeeCountData]` (total count, department breakdown, matching titles)
+- **Required Permission:** `chat:use`, `employees:read:self`, or `employees:read:all`
+- **Access Boundary:** Provides aggregate non-PII corporate headcount statistics across the enterprise.
+
 ### 7.2 Project Management Tools
 
-#### 3. `get_project_details`
+#### 4. `list_projects`
+- **Purpose:** List company projects visible to the authenticated actor, optionally filtered by status (active, completed, planned).
+- **Arguments:** `status: str | None`, `limit: int = 25`, `offset: int = 0`
+- **Output:** `ToolResult[list[ProjectData]]`
+- **Required Permission:** `projects:read:assigned` or `projects:read:all`
+- **Access Boundary:** Admins view all company projects; managers and employees view assigned/managed projects.
+
+#### 5. `get_project_details`
 - **Purpose:** Retrieve full project metadata, budget hours, risk levels, and timelines.
 - **Arguments:** `project_id: str`
 - **Output:** `ToolResult[ProjectData]`

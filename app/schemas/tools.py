@@ -45,6 +45,18 @@ class EmployeeSearchInput(ToolInput):
     offset: int = Field(default=0, ge=0)
 
 
+class EmployeeCountInput(ToolInput):
+    department: str | None = Field(default=None, max_length=100)
+    role: str | None = Field(default=None, max_length=50)
+    job_title: str | None = Field(default=None, max_length=150)
+
+
+class ProjectListInput(ToolInput):
+    status: str | None = Field(default=None, max_length=50)
+    limit: int = Field(default=25, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
 class TaskSearchInput(ToolInput):
     query: str | None = Field(default=None, max_length=250)
     project_id: str | None = Field(default=None, max_length=30)
@@ -178,3 +190,17 @@ class PerformanceSummaryData(BaseModel):
     average_quality_score: float | None
     average_collaboration_score: float | None
     average_attendance_rate: float | None
+
+
+class DepartmentHeadcount(BaseModel):
+    department: str
+    count: int
+
+
+class EmployeeCountData(BaseModel):
+    total_count: int
+    filter_department: str | None = None
+    filter_role: str | None = None
+    filter_job_title: str | None = None
+    breakdown_by_department: list[DepartmentHeadcount] = []
+    matched_job_titles: list[str] = []

@@ -70,6 +70,7 @@ VALID_PROVIDERS = {"gemini", "groq", "ollama"}
 SAFE_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$")
 VALID_TOOLS = {
     "get_department_performance_summary",
+    "get_employee_count",
     "get_employee_details",
     "get_employee_performance_metrics",
     "get_employee_performance_summary",
@@ -81,6 +82,7 @@ VALID_TOOLS = {
     "get_project_tasks",
     "get_project_team",
     "get_task_details",
+    "list_projects",
     "search_employees",
     "search_tasks",
 }

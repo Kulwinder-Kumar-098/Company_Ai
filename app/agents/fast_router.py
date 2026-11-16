@@ -20,7 +20,7 @@ _DATA_INDICATOR = re.compile(
     r"deadline|badge|visitor|department|profile|details|metrics?|ratings?|"
     r"goals?|manager|search|find|allocated|completion|percent(?:age)?|"
     r"quality\s+score|collaboration|occupancy|camera|pay\s+schedule|"
-    r"how\s+many|how\s+much|left)\b",
+    r"how\s+many|how\s+much|left|count|headcount|number\s+of)\b",
     re.IGNORECASE,
 )
 _RESOURCE_ID = re.compile(

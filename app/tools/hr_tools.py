@@ -5,8 +5,12 @@ from sqlalchemy.orm import Session
 
 from app.models.employee import Employee
 from app.models.performance_metric import PerformanceMetric
+from app.models.role import Role
 from app.models.task import Task
 from app.schemas.tools import (
+    DepartmentHeadcount,
+    EmployeeCountData,
+    EmployeeCountInput,
     EmployeeData,
     EmployeeSearchInput,
     EmployeeTasksInput,
@@ -73,9 +77,17 @@ def search_employees(
             (Employee.full_name.ilike(pattern))
             | (Employee.email.ilike(pattern))
             | (Employee.employee_id.ilike(pattern))
+            | (Employee.job_title.ilike(pattern))
         )
     if args.department:
-        statement = statement.where(Employee.department == args.department)
+        dept_raw = args.department.strip()
+        dept_lower = dept_raw.lower()
+        if dept_lower in {"hr", "human resources", "human resource"}:
+            statement = statement.where(Employee.department.ilike("%Human Resources%"))
+        elif dept_lower in {"ai", "ml", "ai/ml", "aiml", "ai-ml"}:
+            statement = statement.where(Employee.department.ilike("%AI/ML%"))
+        else:
+            statement = statement.where(Employee.department.ilike(f"%{dept_raw}%"))
 
     employees = db.scalars(
         statement.order_by(Employee.employee_id)
@@ -95,6 +107,93 @@ def search_employees(
         visible,
         result_count=len(visible),
         action="list",
+    )
+
+
+def get_employee_count(
+    db: Session,
+    actor: Employee,
+    args: EmployeeCountInput,
+) -> ToolResult[EmployeeCountData]:
+    can_read_all = has_permission(db, actor, "employees:read:all")
+    can_read_self = has_permission(db, actor, "employees:read:self")
+    can_chat = has_permission(db, actor, "chat:use")
+    if not can_read_all and not can_read_self and not can_chat:
+        return denied(db, actor, "employee_count", None)
+
+    statement = select(Employee).where(Employee.is_active.is_(True))
+    dept_filter = None
+    if args.department:
+        dept_raw = args.department.strip()
+        dept_lower = dept_raw.lower()
+        if dept_lower in {"hr", "human resources", "human resource"}:
+            statement = statement.where(Employee.department.ilike("%Human Resources%"))
+            dept_filter = "Human Resources"
+        elif dept_lower in {"ai", "ml", "ai/ml", "ai-ml", "aiml"}:
+            statement = statement.where(Employee.department.ilike("%AI/ML%"))
+            dept_filter = "AI/ML"
+        elif dept_lower in {"it", "it operations", "it-operations"}:
+            statement = statement.where(Employee.department.ilike("%IT Operations%"))
+            dept_filter = "IT Operations"
+        elif dept_lower in {"pm", "project management"}:
+            statement = statement.where(Employee.department.ilike("%Project Management%"))
+            dept_filter = "Project Management"
+        else:
+            statement = statement.where(Employee.department.ilike(f"%{dept_raw}%"))
+            dept_filter = dept_raw
+
+    if args.role:
+        role_raw = args.role.strip().lower()
+        statement = statement.join(Employee.role).where(Role.name.ilike(f"%{role_raw}%"))
+
+    if args.job_title:
+        title_raw = args.job_title.strip()
+        title_lower = title_raw.lower()
+        if "ai" in title_lower or "ml" in title_lower:
+            statement = statement.where(
+                Employee.job_title.ilike(f"%{title_raw}%")
+                | Employee.job_title.ilike("%ML Engineer%")
+                | Employee.job_title.ilike("%AI%")
+                | Employee.department.ilike("%AI/ML%")
+            )
+        elif title_lower in {"hr", "human resources"}:
+            statement = statement.where(
+                Employee.job_title.ilike(f"%{title_raw}%")
+                | Employee.department.ilike("%Human Resources%")
+            )
+        else:
+            statement = statement.where(Employee.job_title.ilike(f"%{title_raw}%"))
+
+    employees = db.scalars(statement).all()
+    total_count = len(employees)
+
+    dept_counts: dict[str, int] = {}
+    titles: set[str] = set()
+    for emp in employees:
+        dept_counts[emp.department] = dept_counts.get(emp.department, 0) + 1
+        if emp.job_title:
+            titles.add(emp.job_title)
+
+    breakdown = [
+        DepartmentHeadcount(department=dept, count=count)
+        for dept, count in sorted(dept_counts.items(), key=lambda x: x[0])
+    ]
+
+    return success(
+        db,
+        actor,
+        "employee_count",
+        dept_filter or "all",
+        EmployeeCountData(
+            total_count=total_count,
+            filter_department=dept_filter,
+            filter_role=args.role,
+            filter_job_title=args.job_title,
+            breakdown_by_department=breakdown,
+            matched_job_titles=sorted(list(titles))[:10],
+        ),
+        result_count=total_count,
+        action="count",
     )
 
 

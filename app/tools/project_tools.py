@@ -8,6 +8,7 @@ from app.models.project import Project
 from app.models.task import Task
 from app.schemas.tools import (
     ProjectData,
+    ProjectListInput,
     ProjectStatusData,
     ProjectTaskInput,
     ProjectTeamInput,
@@ -58,6 +59,42 @@ def get_project_details(
         "project",
         args.project_id,
         ProjectData.model_validate(project),
+    )
+
+
+def list_projects(
+    db: Session,
+    actor: Employee,
+    args: ProjectListInput,
+) -> ToolResult[list[ProjectData]]:
+    can_read_all = can_read_all_projects(db, actor)
+    can_read_assigned = has_permission(db, actor, "projects:read:assigned") or has_permission(db, actor, "projects:read")
+    if not can_read_all and not can_read_assigned:
+        return denied(db, actor, "project", None)
+
+    statement = select(Project)
+    if args.status:
+        statement = statement.where(Project.status.ilike(f"%{args.status.strip()}%"))
+
+    projects = db.scalars(
+        statement.order_by(Project.project_id)
+        .offset(args.offset)
+        .limit(args.limit)
+    ).all()
+
+    visible = [
+        ProjectData.model_validate(p)
+        for p in projects
+        if can_read_all or project_scope(db, actor, p.project_id)
+    ]
+    return success(
+        db,
+        actor,
+        "project",
+        None,
+        visible,
+        result_count=len(visible),
+        action="list",
     )
 
 
